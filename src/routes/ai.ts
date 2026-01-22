@@ -1,0 +1,32 @@
+import { Router, Response } from 'express';
+import { AuthRequest, authMiddleware } from '../middleware/auth';
+import { generateEndpointDocs } from '../services/aiService';
+import { z } from 'zod';
+
+const router = Router();
+
+router.post('/generate-docs', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const schema = z.object({
+            method: z.string(),
+            url: z.string(),
+            body: z.any().optional(),
+            response: z.any().optional(),
+            userCommand: z.string().optional(),
+        });
+
+        const input = schema.parse(req.body);
+        const result = await generateEndpointDocs(
+            input.method,
+            input.url,
+            input.body,
+            input.response,
+            input.userCommand
+        );
+        res.json(result);
+    } catch (error: any) {
+        res.status(400).json({ message: error.message });
+    }
+});
+
+export default router;
