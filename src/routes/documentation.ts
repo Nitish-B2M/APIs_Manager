@@ -9,11 +9,38 @@ const router = Router();
 router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         console.log('Fetching list for user:', req.user!.userId);
+        
+        // Get all documentation with their requests
         const { rows } = await query(
-            'SELECT * FROM documentation WHERE "userId" = $1 ORDER BY "createdAt" DESC',
+            `SELECT d.*, 
+                    COALESCE(
+                        json_agg(
+                            json_build_object(
+                                'id', r.id,
+                                'name', r.name,
+                                'method', r.method,
+                                'url', r.url,
+                                'description', r.description,
+                                'body', r.body,
+                                'headers', r.headers,
+                                'lastResponse', r."lastResponse",
+                                'history', r.history,
+                                'order', r."order",
+                                'updatedAt', r."updatedAt"
+                            )
+                        ) FILTER (WHERE r.id IS NOT NULL),
+                        '[]'
+                    ) as requests
+             FROM documentation d
+             LEFT JOIN requests r ON d.id = r."documentationId"
+             WHERE d."userId" = $1
+             GROUP BY d.id
+             ORDER BY d."createdAt" DESC`,
             [req.user!.userId]
         );
-        console.log(`Found ${rows.length} collections`);
+        
+        console.log(`Found ${rows.length} collections with requests`);
+        
         res.json({
             status: true,
             message: 'Collections fetched successfully',
@@ -21,6 +48,7 @@ router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
             pagination: null
         });
     } catch (error: any) {
+        console.error('Error fetching collections:', error);
         res.status(500).json({ status: false, message: 'Failed to fetch collections', error: error.message });
     }
 });
@@ -245,7 +273,7 @@ router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res
             return;
         }
 
-        const fields = ['name', 'method', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'order'];
+        const fields = ['name', 'method', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'history', 'order'];
         const updates: string[] = [];
         const values: any[] = [];
         let count = 1;

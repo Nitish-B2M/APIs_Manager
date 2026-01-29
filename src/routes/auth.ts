@@ -69,13 +69,29 @@ router.post('/login', async (req: Request, res: Response) => {
 });
 
 router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
-    console.log('Profile requested for:', req.user?.userId);
-    res.json({
-        status: true,
-        message: 'Profile fetched',
-        data: req.user,
-        pagination: null
-    });
+    try {
+        if (!req.user?.userId) {
+            res.status(401).json({ status: false, message: 'Unauthorized' });
+            return;
+        }
+
+        const { rows } = await query('SELECT id, email, "createdAt" FROM users WHERE id = $1', [req.user.userId]);
+        
+        if (rows.length === 0) {
+            res.status(404).json({ status: false, message: 'User not found' });
+            return;
+        }
+
+        res.json({
+            status: true,
+            message: 'Profile fetched',
+            data: { id: rows[0].id, email: rows[0].email },
+            pagination: null
+        });
+    } catch (error: any) {
+        console.error('Error fetching profile:', error);
+        res.status(500).json({ status: false, message: 'Failed to fetch profile', error: error.message });
+    }
 });
 
 
