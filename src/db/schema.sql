@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS requests (
     headers JSONB,
     params JSONB,
     "lastResponse" JSONB,
+    history JSONB DEFAULT '[]'::jsonb,
     "order" INTEGER DEFAULT 0,
     "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP

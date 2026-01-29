@@ -1,0 +1,94 @@
+# ============================================
+# Postman Documentation Generator - Server
+# Docker Compose Configuration
+# ============================================
+
+services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: postman-docs-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postman_docs
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - server-network
+
+  # ============================================
+  # Backend Server
+  # ============================================
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: postman-docs-server
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postman_docs
+      JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-production}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:3000}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:4000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - server-network
+
+# ============================================
+# Docker Networks
+# ============================================
+networks:
+  server-network:
+    driver: bridge
+
+# ============================================
+# Docker Volumes
+# ============================================
+volumes:
+  postgres_data:
+    driver: local
+
+# ============================================
+# Usage
+# ============================================
+# 1. Copy environment variables:
+#    cp .env.example .env
+#    # Edit .env with your settings
+#
+# 2. Build and start:
+#    docker-compose up -d --build
+#
+# 3. View logs:
+#    docker-compose logs -f
+#
+# 4. Stop:
+#    docker-compose down
+#
+# 5. Stop and remove volumes:
+#    docker-compose down -v
+#
+# Access Points:
+# - Server:  http://localhost:4000
+# - Database: localhost:5432
