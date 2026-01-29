@@ -14,7 +14,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
         const { rows: existingUsers } = await query('SELECT * FROM users WHERE email = $1', [email]);
         if (existingUsers.length > 0) {
-            res.status(409).json({ message: 'User already exists' });
+            res.status(409).json({ status: false, message: 'User already exists', error: 'Conflict' });
             return;
         }
 
@@ -26,9 +26,14 @@ router.post('/register', async (req: Request, res: Response) => {
         const user = rows[0];
 
         const token = signJwt({ userId: user.id });
-        res.json({ token, user: { id: user.id, email: user.email } });
+        res.json({
+            status: true,
+            message: 'User registered successfully',
+            data: { token, user: { id: user.id, email: user.email } },
+            pagination: null
+        });
     } catch (error: any) {
-        res.status(400).json({ message: error.message });
+        res.status(400).json({ status: false, message: 'Registration failed', error: error.message });
     }
 });
 
@@ -41,25 +46,37 @@ router.post('/login', async (req: Request, res: Response) => {
         const user = rows[0];
 
         if (!user) {
-            res.status(401).json({ message: 'Invalid credentials' });
+            res.status(401).json({ status: false, message: 'Invalid credentials', error: 'Unauthorized' });
             return;
         }
 
         const isValid = await bcrypt.compare(password, user.password);
         if (!isValid) {
-            res.status(401).json({ message: 'Invalid credentials' });
+            res.status(401).json({ status: false, message: 'Invalid credentials', error: 'Unauthorized' });
             return;
         }
 
         const token = signJwt({ userId: user.id });
-        res.json({ token, user: { id: user.id, email: user.email } });
+        res.json({
+            status: true,
+            message: 'Login successful',
+            data: { token, user: { id: user.id, email: user.email } },
+            pagination: null
+        });
     } catch (error: any) {
-        res.status(400).json({ message: error.message });
+        res.status(400).json({ status: false, message: 'Login failed', error: error.message });
     }
 });
 
 router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
-    res.json(req.user);
+    console.log('Profile requested for:', req.user?.userId);
+    res.json({
+        status: true,
+        message: 'Profile fetched',
+        data: req.user,
+        pagination: null
+    });
 });
+
 
 export default router;
