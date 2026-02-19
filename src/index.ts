@@ -17,13 +17,17 @@ const PORT = process.env.PORT || 4000;
 
 app.use(cors({
     origin: (origin, callback) => {
+        const envAllowed = process.env.ALLOWED_ORIGIN || '';
         const allowedOrigins = [
             'http://localhost:3000',
             'https://apis-manager-git-master-nitishb2ms-projects.vercel.app',
-            process.env.ALLOWED_ORIGIN
-        ].filter(Boolean);
+            ...envAllowed.split(',')
+        ].map(o => o.trim()).filter(Boolean);
 
-        if (!origin || allowedOrigins.includes(origin)) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+
+        if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
             callback(null, true);
         } else {
             console.log('Blocked by CORS:', origin);
