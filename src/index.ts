@@ -11,6 +11,7 @@ import todosRoutes from './routes/todos';
 import notesRoutes from './routes/notes';
 
 const app = express();
+export default app;
 export { app };
 const PORT = process.env.PORT || 4000;
 
