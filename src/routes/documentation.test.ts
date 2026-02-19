@@ -9,11 +9,11 @@ vi.mock('../utils/db', () => ({
 
 // Mock auth middleware
 vi.mock('../middleware/auth', () => ({
-    authMiddleware: (req: any, res: any, next: any) => {
+    authMiddleware: (req: any, _res: any, next: any) => {
         req.user = { userId: 'test-user-id' };
         next();
     },
-    optionalAuthMiddleware: (req: any, res: any, next: any) => {
+    optionalAuthMiddleware: (req: any, _res: any, next: any) => {
         req.user = { userId: 'test-user-id' };
         next();
     },
@@ -31,7 +31,7 @@ describe('Documentation Routes', () => {
             const mockDocs = [
                 { id: '1', title: 'Test Collection', requests: [] }
             ];
-            
+
             (query as any).mockResolvedValueOnce({ rows: mockDocs });
 
             const response = await request(app)
@@ -51,7 +51,7 @@ describe('Documentation Routes', () => {
                 title: 'New Collection',
                 content: JSON.stringify({ collection: { name: 'New Collection', description: '' }, variables: {} }),
             };
-            
+
             (query as any).mockResolvedValueOnce({ rows: [mockDoc] });
 
             const response = await request(app)
@@ -78,7 +78,7 @@ describe('Documentation Routes', () => {
     describe('DELETE /api/documentation/:id', () => {
         it('should delete a documentation owned by user', async () => {
             const mockDoc = { id: '1', title: 'Test', userId: 'test-user-id' };
-            
+
             (query as any)
                 .mockResolvedValueOnce({ rows: [mockDoc] }) // SELECT
                 .mockResolvedValueOnce({ rows: [mockDoc] }); // DELETE
@@ -107,7 +107,7 @@ describe('Documentation Routes', () => {
         it('should delete a request', async () => {
             const mockRequest = { id: 'req-1', documentationId: 'doc-1' };
             const mockDoc = { id: 'doc-1', userId: 'test-user-id' };
-            
+
             (query as any)
                 .mockResolvedValueOnce({ rows: [mockRequest] }) // Find request
                 .mockResolvedValueOnce({ rows: [mockDoc] }) // Verify ownership
@@ -130,7 +130,7 @@ describe('Documentation Routes', () => {
 
         it('should reorder requests', async () => {
             const mockDoc = { id: validDocId, userId: 'test-user-id' };
-            
+
             // Mock all queries - the function uses query() for BEGIN/COMMIT as well
             (query as any).mockImplementation((sql: string) => {
                 if (sql.includes('SELECT')) {
