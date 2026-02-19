@@ -101,7 +101,7 @@ npm run db:init
 npm run dev
 ```
 
-The server will be available at `http://localhost:4000`
+The server will be available at `http://localhost:4001`
 
 ### Environment Variables
 
