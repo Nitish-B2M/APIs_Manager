@@ -40,6 +40,15 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // REST API routes
+app.get('/api/health', (_req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        message: 'Server is healthy',
+        timestamp: new Date().toISOString(),
+        env: process.env.NODE_ENV
+    });
+});
+
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/documentation', documentationRoutes);
 app.use('/api/documentation', foldersRoutes);
