@@ -13,7 +13,7 @@ import notesRoutes from './routes/notes';
 const app = express();
 export default app;
 export { app };
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 4001;
 
 app.use(cors({
     origin: (origin, callback) => {

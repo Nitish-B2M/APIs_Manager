@@ -265,7 +265,7 @@ router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res
             return;
         }
 
-        const fields = ['name', 'method', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'history', 'order', 'folderId'];
+        const fields = ['name', 'method', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'history', 'order', 'folderId', 'auth'];
         const updates: string[] = [];
         const values: any[] = [];
         let count = 1;

@@ -38,18 +38,18 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      PORT: 4000
+      PORT: 4001
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postman_docs
       JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-production}
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:3000}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     ports:
-      - "4000:4000"
+      - "4001:4001"
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:4000/ || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:4001/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -90,5 +90,5 @@ volumes:
 #    docker-compose down -v
 #
 # Access Points:
-# - Server:  http://localhost:4000
+# - Server:  http://localhost:4001
 # - Database: localhost:5432

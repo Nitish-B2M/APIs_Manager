@@ -110,7 +110,7 @@ The server will be available at `http://localhost:4001`
 DATABASE_URL=postgresql://user:password@localhost:5432/postman_docs
 
 # Server Configuration
-PORT=4000
+PORT=4001
 ALLOWED_ORIGIN=http://localhost:3000
 
 # Authentication
@@ -131,7 +131,7 @@ GEMINI_API_KEY=your-gemini-api-key-for-ai-docs
 docker build -t postman-docs-server .
 
 # Run the container
-docker run -p 4000:4000 postman-docs-server
+docker run -p 4001:4001 postman-docs-server
 ```
 
 ### Docker Compose
@@ -186,7 +186,7 @@ RUN chown -R nodejs:nodejs /app
 USER nodejs
 
 # Expose port
-EXPOSE 4000
+EXPOSE 4001
 
 # Start the application
 CMD ["node", "dist/index.js"]
