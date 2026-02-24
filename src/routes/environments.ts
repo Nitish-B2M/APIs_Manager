@@ -9,6 +9,10 @@ import { ERROR_CODES } from '../constants/errorCodes';
 const SERVICE_NAME = 'EnvironmentService';
 const router = Router();
 
+// ============================================
+// COLLECTION SCOPED ROUTES
+// ============================================
+
 // Get all environments for a documentation
 router.get('/:documentationId/environments', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
@@ -26,7 +30,7 @@ router.get('/:documentationId/environments', authMiddleware, async (req: AuthReq
 
         const { rows: environments } = await query(
             `SELECT * FROM environments 
-             WHERE "documentationId" = $1 
+             WHERE "documentationId" = $1 AND "scope" = 'COLLECTION'
              ORDER BY "order" ASC`,
             [documentationId]
         );
@@ -41,14 +45,15 @@ router.get('/:documentationId/environments', authMiddleware, async (req: AuthReq
     }
 });
 
-// Create a new environment
+// Create a new collection environment
 router.post('/:documentationId/environments', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         const { documentationId } = req.params;
         const schema = z.object({
             name: z.string().min(1).max(50),
             variables: z.record(z.string()).optional().default({}),
-            isActive: z.boolean().optional().default(false)
+            isActive: z.boolean().optional().default(false),
+            secrets: z.array(z.string()).optional().default([])
         });
 
         const input = schema.parse(req.body);
@@ -68,7 +73,7 @@ router.post('/:documentationId/environments', authMiddleware, async (req: AuthRe
         try {
             if (input.isActive) {
                 await query(
-                    'UPDATE environments SET "isActive" = false WHERE "documentationId" = $1',
+                    'UPDATE environments SET "isActive" = false WHERE "documentationId" = $1 AND "scope" = \'COLLECTION\'',
                     [documentationId]
                 );
             }
@@ -76,15 +81,15 @@ router.post('/:documentationId/environments', authMiddleware, async (req: AuthRe
             const { rows: countRes } = await query(
                 `SELECT COALESCE(MAX("order"), -1) + 1 as next_order 
                  FROM environments 
-                 WHERE "documentationId" = $1`,
+                 WHERE "documentationId" = $1 AND "scope" = \'COLLECTION\'`,
                 [documentationId]
             );
             const nextOrder = countRes[0].next_order;
 
             const { rows } = await query(
-                `INSERT INTO environments ("documentationId", name, variables, "isActive", "order") 
-                 VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-                [documentationId, input.name, JSON.stringify(input.variables), input.isActive, nextOrder]
+                `INSERT INTO environments ("documentationId", "userId", name, variables, "isActive", "order", "scope", "secrets") 
+                 VALUES ($1, $2, $3, $4, $5, $6, 'COLLECTION', $7) RETURNING *`,
+                [documentationId, req.user!.userId, input.name, JSON.stringify(input.variables), input.isActive, nextOrder, JSON.stringify(input.secrets)]
             );
 
             await query('COMMIT');
@@ -103,7 +108,188 @@ router.post('/:documentationId/environments', authMiddleware, async (req: AuthRe
     }
 });
 
-// Update an environment
+// Set active environment for collection
+router.patch('/:documentationId/environments/set-active', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const { documentationId } = req.params;
+        const schema = z.object({
+            environmentId: z.string().uuid().nullable()
+        });
+
+        const input = schema.parse(req.body);
+
+        const { rows: docs } = await query(
+            'SELECT "userId" FROM documentation WHERE id = $1',
+            [documentationId]
+        );
+
+        if (!docs[0] || docs[0].userId !== req.user!.userId) {
+            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+            return;
+        }
+
+        await query('BEGIN');
+
+        try {
+            await query(
+                'UPDATE environments SET "isActive" = false WHERE "documentationId" = $1 AND "scope" = \'COLLECTION\'',
+                [documentationId]
+            );
+
+            if (input.environmentId) {
+                await query(
+                    'UPDATE environments SET "isActive" = true WHERE id = $1 AND "documentationId" = $2 AND "scope" = \'COLLECTION\'',
+                    [input.environmentId, documentationId]
+                );
+            }
+
+            await query('COMMIT');
+
+            const { rows: environments } = await query(
+                'SELECT * FROM environments WHERE "documentationId" = $1 AND "scope" = \'COLLECTION\' ORDER BY "order" ASC',
+                [documentationId]
+            );
+
+            res.json(ApiResponse.success({
+                message: input.environmentId ? 'Active environment updated' : 'No active environment set',
+                data: environments,
+            }));
+        } catch (error) {
+            await query('ROLLBACK');
+            throw error;
+        }
+    } catch (error: any) {
+        logErrorReport('setActiveEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_SET_ACTIVE_FAILED);
+        res.status(500).json(ApiResponse.error({ message: 'Failed to set active environment' }));
+    }
+});
+
+// ============================================
+// GLOBAL SCOPED ROUTES
+// ============================================
+
+// Get all global environments for current user
+router.get('/global/list', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const { rows: environments } = await query(
+            `SELECT * FROM environments 
+             WHERE "userId" = $1 AND "scope" = 'GLOBAL'
+             ORDER BY "order" ASC`,
+            [req.user!.userId]
+        );
+
+        res.json(ApiResponse.success({
+            message: 'Global environments fetched successfully',
+            data: environments,
+        }));
+    } catch (error: any) {
+        logErrorReport('getGlobalEnvironments', SERVICE_NAME, error, ERROR_CODES.ENV_FETCH_FAILED);
+        res.status(500).json(ApiResponse.error({ message: 'Failed to fetch global environments' }));
+    }
+});
+
+// Create a new global environment
+router.post('/global', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const schema = z.object({
+            name: z.string().min(1).max(50),
+            variables: z.record(z.string()).optional().default({}),
+            isActive: z.boolean().optional().default(false),
+            secrets: z.array(z.string()).optional().default([])
+        });
+
+        const input = schema.parse(req.body);
+
+        await query('BEGIN');
+
+        try {
+            if (input.isActive) {
+                await query(
+                    'UPDATE environments SET "isActive" = false WHERE "userId" = $1 AND "scope" = \'GLOBAL\'',
+                    [req.user!.userId]
+                );
+            }
+
+            const { rows: countRes } = await query(
+                `SELECT COALESCE(MAX("order"), -1) + 1 as next_order 
+                 FROM environments 
+                 WHERE "userId" = $1 AND "scope" = \'GLOBAL\'`,
+                [req.user!.userId]
+            );
+            const nextOrder = countRes[0].next_order;
+
+            const { rows } = await query(
+                `INSERT INTO environments ("userId", name, variables, "isActive", "order", "scope", "secrets") 
+                 VALUES ($1, $2, $3, $4, $5, 'GLOBAL', $6) RETURNING *`,
+                [req.user!.userId, input.name, JSON.stringify(input.variables), input.isActive, nextOrder, JSON.stringify(input.secrets)]
+            );
+
+            await query('COMMIT');
+
+            res.json(ApiResponse.success({
+                message: 'Global environment created successfully',
+                data: rows[0],
+            }));
+        } catch (error) {
+            await query('ROLLBACK');
+            throw error;
+        }
+    } catch (error: any) {
+        logErrorReport('createGlobalEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_CREATE_FAILED);
+        res.status(400).json(ApiResponse.error({ message: 'Failed to create global environment' }));
+    }
+});
+
+// Set active global environment
+router.patch('/global/set-active', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const schema = z.object({
+            environmentId: z.string().uuid().nullable()
+        });
+
+        const input = schema.parse(req.body);
+
+        await query('BEGIN');
+
+        try {
+            await query(
+                'UPDATE environments SET "isActive" = false WHERE "userId" = $1 AND "scope" = \'GLOBAL\'',
+                [req.user!.userId]
+            );
+
+            if (input.environmentId) {
+                await query(
+                    'UPDATE environments SET "isActive" = true WHERE id = $1 AND "userId" = $2 AND "scope" = \'GLOBAL\'',
+                    [input.environmentId, req.user!.userId]
+                );
+            }
+
+            await query('COMMIT');
+
+            const { rows: environments } = await query(
+                'SELECT * FROM environments WHERE "userId" = $1 AND "scope" = \'GLOBAL\' ORDER BY "order" ASC',
+                [req.user!.userId]
+            );
+
+            res.json(ApiResponse.success({
+                message: input.environmentId ? 'Active global environment updated' : 'No active global environment set',
+                data: environments,
+            }));
+        } catch (error) {
+            await query('ROLLBACK');
+            throw error;
+        }
+    } catch (error: any) {
+        logErrorReport('setActiveGlobalEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_SET_ACTIVE_FAILED);
+        res.status(500).json(ApiResponse.error({ message: 'Failed to set active global environment' }));
+    }
+});
+
+// ============================================
+// COMMON ROUTES (Shared for both scopes)
+// ============================================
+
+// Update an environment (handles global or collection)
 router.patch('/environments/:environmentId', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         const { environmentId } = req.params;
@@ -111,34 +297,41 @@ router.patch('/environments/:environmentId', authMiddleware, async (req: AuthReq
             name: z.string().min(1).max(50).optional(),
             variables: z.record(z.string()).optional(),
             isActive: z.boolean().optional(),
-            order: z.number().optional()
+            order: z.number().optional(),
+            secrets: z.array(z.string()).optional()
         });
 
         const input = schema.parse(req.body);
 
+        // Check ownership
         const { rows: envs } = await query(
-            `SELECT e.*, d."userId", e."documentationId"
-             FROM environments e 
-             JOIN documentation d ON e."documentationId" = d.id 
-             WHERE e.id = $1`,
-            [environmentId]
+            `SELECT * FROM environments 
+             WHERE id = $1 AND "userId" = $2`,
+            [environmentId, req.user!.userId]
         );
 
-        if (!envs[0] || envs[0].userId !== req.user!.userId) {
+        if (!envs[0]) {
             res.status(404).json(ApiResponse.error({ message: 'Environment not found' }));
             return;
         }
 
-        const documentationId = envs[0].documentationId;
+        const env = envs[0];
 
         await query('BEGIN');
 
         try {
             if (input.isActive) {
-                await query(
-                    'UPDATE environments SET "isActive" = false WHERE "documentationId" = $1 AND id != $2',
-                    [documentationId, environmentId]
-                );
+                if (env.scope === 'GLOBAL') {
+                    await query(
+                        'UPDATE environments SET "isActive" = false WHERE "userId" = $1 AND "scope" = \'GLOBAL\' AND id != $2',
+                        [req.user!.userId, environmentId]
+                    );
+                } else {
+                    await query(
+                        'UPDATE environments SET "isActive" = false WHERE "documentationId" = $1 AND "scope" = \'COLLECTION\' AND id != $2',
+                        [env.documentationId, environmentId]
+                    );
+                }
             }
 
             const updates: string[] = [];
@@ -163,6 +356,11 @@ router.patch('/environments/:environmentId', authMiddleware, async (req: AuthReq
             if (input.order !== undefined) {
                 updates.push(`"order" = $${count}`);
                 values.push(input.order);
+                count++;
+            }
+            if (input.secrets !== undefined) {
+                updates.push(`secrets = $${count}`);
+                values.push(JSON.stringify(input.secrets));
                 count++;
             }
 
@@ -200,14 +398,12 @@ router.delete('/environments/:environmentId', authMiddleware, async (req: AuthRe
         const { environmentId } = req.params;
 
         const { rows: envs } = await query(
-            `SELECT e.*, d."userId" 
-             FROM environments e 
-             JOIN documentation d ON e."documentationId" = d.id 
-             WHERE e.id = $1`,
-            [environmentId]
+            `SELECT * FROM environments 
+             WHERE id = $1 AND "userId" = $2`,
+            [environmentId, req.user!.userId]
         );
 
-        if (!envs[0] || envs[0].userId !== req.user!.userId) {
+        if (!envs[0]) {
             res.status(404).json(ApiResponse.error({ message: 'Environment not found' }));
             return;
         }
@@ -221,62 +417,6 @@ router.delete('/environments/:environmentId', authMiddleware, async (req: AuthRe
     } catch (error: any) {
         logErrorReport('deleteEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_DELETE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to delete environment' }));
-    }
-});
-
-// Set active environment
-router.patch('/:documentationId/environments/set-active', authMiddleware, async (req: AuthRequest, res: Response) => {
-    try {
-        const { documentationId } = req.params;
-        const schema = z.object({
-            environmentId: z.string().uuid().nullable()
-        });
-
-        const input = schema.parse(req.body);
-
-        const { rows: docs } = await query(
-            'SELECT "userId" FROM documentation WHERE id = $1',
-            [documentationId]
-        );
-
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
-            return;
-        }
-
-        await query('BEGIN');
-
-        try {
-            await query(
-                'UPDATE environments SET "isActive" = false WHERE "documentationId" = $1',
-                [documentationId]
-            );
-
-            if (input.environmentId) {
-                await query(
-                    'UPDATE environments SET "isActive" = true WHERE id = $1 AND "documentationId" = $2',
-                    [input.environmentId, documentationId]
-                );
-            }
-
-            await query('COMMIT');
-
-            const { rows: environments } = await query(
-                'SELECT * FROM environments WHERE "documentationId" = $1 ORDER BY "order" ASC',
-                [documentationId]
-            );
-
-            res.json(ApiResponse.success({
-                message: input.environmentId ? 'Active environment updated' : 'No active environment set',
-                data: environments,
-            }));
-        } catch (error) {
-            await query('ROLLBACK');
-            throw error;
-        }
-    } catch (error: any) {
-        logErrorReport('setActiveEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_SET_ACTIVE_FAILED);
-        res.status(500).json(ApiResponse.error({ message: 'Failed to set active environment' }));
     }
 });
 

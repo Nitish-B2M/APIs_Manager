@@ -51,11 +51,11 @@ RUN chown -R nodejs:nodejs /app
 USER nodejs
 
 # Expose the application port
-EXPOSE 4000
+EXPOSE 4001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:4000/ || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:4001/ || exit 1
 
 # Start the application
 CMD ["node", "dist/index.js"]
@@ -76,7 +76,7 @@ CMD ["node", "dist/index.js"]
 
 # COPY . .
 
-# EXPOSE 4000
+# EXPOSE 4001
 
 # CMD ["npm", "run", "dev"]
 
