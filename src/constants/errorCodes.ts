@@ -63,6 +63,14 @@ export const ERROR_CODES = {
 
     // AI
     AI_GENERATE_FAILED: 'AI_001',
+
+    // Collaboration
+    COLLAB_INVITE_FAILED: 'CLB_001',
+    COLLAB_ACCEPT_FAILED: 'CLB_002',
+    COLLAB_CANCEL_FAILED: 'CLB_003',
+    COLLAB_REMOVE_FAILED: 'CLB_004',
+    COLLAB_UPDATE_ROLE_FAILED: 'CLB_005',
+    COLLAB_FETCH_FAILED: 'CLB_006',
 } as const;
 
 export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
