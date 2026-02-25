@@ -4,6 +4,7 @@ import { query } from '../utils/db';
 import { z } from 'zod';
 import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
+import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { ERROR_CODES } from '../constants/errorCodes';
 
 const SERVICE_NAME = 'DocumentationService';
@@ -20,6 +21,7 @@ router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
                                 'id', r.id,
                                 'name', r.name,
                                 'method', r.method,
+                                'protocol', r.protocol,
                                 'url', r.url,
                                 'description', r.description,
                                 'body', r.body,
@@ -28,6 +30,7 @@ router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
                                 'history', r.history,
                                 'folderId', r."folderId",
                                 'order', r."order",
+                                'assertions', r.assertions,
                                 'updatedAt', r."updatedAt"
                             )
                         ) FILTER (WHERE r.id IS NOT NULL),
@@ -35,15 +38,31 @@ router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
                     ) as requests
              FROM documentation d
              LEFT JOIN requests r ON d.id = r."documentationId"
-             WHERE d."userId" = $1
+             WHERE d."userId" = $1 OR d.id IN (SELECT "documentationId" FROM documentation_collaborators WHERE "userId" = $1)
              GROUP BY d.id
              ORDER BY d."updatedAt" DESC`,
             [req.user!.userId]
         );
 
+        // Fetch collaborators for each documentation
+        const docsWithCollaborators = await Promise.all(rows.map(async (doc: any) => {
+            const { rows: collaborators } = await query(
+                `SELECT c.id, c.role::text as role, u.name, u.email, u.avatar_url as "avatarUrl"
+                 FROM documentation_collaborators c
+                 JOIN users u ON c."userId" = u.id
+                 WHERE c."documentationId" = $1
+                 UNION
+                 SELECT u.id, 'OWNER' as role, u.name, u.email, u.avatar_url as "avatarUrl"
+                 FROM users u
+                 WHERE u.id = $2`,
+                [doc.id, doc.userId]
+            );
+            return { ...doc, collaborators };
+        }));
+
         res.json(ApiResponse.success({
             message: 'Collections fetched successfully',
-            data: rows,
+            data: docsWithCollaborators,
         }));
     } catch (error: any) {
         logErrorReport('listDocumentations', SERVICE_NAME, error, ERROR_CODES.DOC_LIST_FAILED);
@@ -87,12 +106,13 @@ router.post('/create', authMiddleware, async (req: AuthRequest, res: Response) =
             for (let i = 0; i < endpoints.length; i++) {
                 const ep = endpoints[i];
                 await query(
-                    `INSERT INTO requests ("documentationId", name, method, url, description, body, headers, "order") 
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                    `INSERT INTO requests ("documentationId", name, method, protocol, url, description, body, headers, "order") 
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
                     [
                         docId,
                         ep.name,
                         ep.method,
+                        ep.protocol || 'REST',
                         ep.url,
                         ep.description,
                         JSON.stringify(ep.body),
@@ -156,12 +176,11 @@ router.post('/create-empty', authMiddleware, async (req: AuthRequest, res: Respo
 // Delete documentation
 router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { id } = req.params;
-        const { rows: docs } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
-        const doc = docs[0];
+        const id = req.params.id as string;
+        const access = await checkAccess(id, req.user!.userId);
 
-        if (!doc || doc.userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        if (!access.hasAccess || !canAdmin(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Admin access required to delete collection' }));
             return;
         }
 
@@ -179,14 +198,12 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
 // Toggle public status
 router.patch('/:id/toggle-public', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { id } = req.params;
+        const id = req.params.id as string;
         const { isPublic } = req.body;
 
-        const { rows: docs } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
-        const doc = docs[0];
-
-        if (!doc || doc.userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        const access = await checkAccess(id, req.user!.userId);
+        if (!access.hasAccess || !canAdmin(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Admin access required to toggle visibility' }));
             return;
         }
 
@@ -207,12 +224,12 @@ router.patch('/:id/toggle-public', authMiddleware, async (req: AuthRequest, res:
 // Update documentation (handles general content/variables)
 router.patch('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { id } = req.params;
+        const id = req.params.id as string;
         const { content, title } = req.body;
 
-        const { rows: docs } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        const access = await checkAccess(id, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required to update collection' }));
             return;
         }
 
@@ -259,13 +276,13 @@ router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res
         }
 
         const docId = reqs[0].documentationId;
-        const { rows: docs } = await query('SELECT "userId" FROM documentation WHERE id = $1', [docId]);
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(403).json(ApiResponse.error({ message: 'Unauthorized' }));
+        const access = await checkAccess(docId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
             return;
         }
 
-        const fields = ['name', 'method', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'history', 'order', 'folderId', 'auth'];
+        const fields = ['name', 'method', 'protocol', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'history', 'order', 'folderId', 'auth', 'assertions'];
         const updates: string[] = [];
         const values: any[] = [];
         let count = 1;
@@ -317,9 +334,9 @@ router.delete('/request/:requestId', authMiddleware, async (req: AuthRequest, re
         }
 
         const docId = reqs[0].documentationId;
-        const { rows: docs } = await query('SELECT "userId" FROM documentation WHERE id = $1', [docId]);
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(403).json(ApiResponse.error({ message: 'Unauthorized' }));
+        const access = await checkAccess(docId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
             return;
         }
 
@@ -344,7 +361,7 @@ router.delete('/request/:requestId', authMiddleware, async (req: AuthRequest, re
 // Reorder requests in a documentation
 router.patch('/:id/requests/reorder', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { id } = req.params;
+        const id = req.params.id as string;
         const schema = z.object({
             requests: z.array(z.object({
                 id: z.string().uuid(),
@@ -354,9 +371,9 @@ router.patch('/:id/requests/reorder', authMiddleware, async (req: AuthRequest, r
 
         const input = schema.parse(req.body);
 
-        const { rows: docs } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        const access = await checkAccess(id, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required to reorder requests' }));
             return;
         }
 
@@ -394,12 +411,12 @@ router.patch('/:id/requests/reorder', authMiddleware, async (req: AuthRequest, r
 // Create a new request for a documentation
 router.post('/:id/request', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { id } = req.params;
+        const id = req.params.id as string;
         const { name, method, url, folderId } = req.body;
 
-        const { rows: docs } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        const access = await checkAccess(id, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required to create requests' }));
             return;
         }
 
@@ -418,9 +435,9 @@ router.post('/:id/request', authMiddleware, async (req: AuthRequest, res: Respon
         const order = parseInt(countRes[0].count);
 
         const { rows } = await query(
-            `INSERT INTO requests ("documentationId", name, method, url, "order", body, headers, params, "folderId") 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-            [id, name || 'New Request', method || 'GET', url || '', order, '{}', '[]', '[]', folderId || null]
+            `INSERT INTO requests ("documentationId", name, method, protocol, url, "order", body, headers, params, "folderId", assertions) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+            [id, name || 'New Request', method || 'GET', req.body.protocol || 'REST', url || '', order, '{}', '[]', '[]', folderId || null, '[]']
         );
 
         // update documentation last updated
@@ -442,7 +459,7 @@ router.post('/:id/request', authMiddleware, async (req: AuthRequest, res: Respon
 // Get by ID (includes requests join)
 router.get('/:id', optionalAuthMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { id } = req.params;
+        const id = req.params.id as string;
         const { rows } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
         const doc = rows[0];
 
@@ -451,9 +468,9 @@ router.get('/:id', optionalAuthMiddleware, async (req: AuthRequest, res: Respons
             return;
         }
 
-        const isOwner = req.user && doc.userId === req.user.userId;
+        const access = await checkAccess(id, req.user?.userId || '');
 
-        if (!doc.isPublic && !isOwner) {
+        if (!access.hasAccess) {
             if (!req.user) {
                 res.status(401).json(ApiResponse.error({ message: 'This collection is private. Please login to view it.' }));
                 return;
@@ -461,6 +478,9 @@ router.get('/:id', optionalAuthMiddleware, async (req: AuthRequest, res: Respons
             res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
             return;
         }
+
+        // Include user's role in the response so UI knows what changes to allow/block
+        doc.role = access.role;
 
         const { rows: requests } = await query('SELECT * FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
         doc.requests = requests;
@@ -528,7 +548,7 @@ router.get('/public/:slug', async (req: AuthRequest, res: Response) => {
         }
 
         const { rows: requests } = await query(
-            `SELECT id, name, method, url, description, body, headers, params, "lastResponse", "order", "folderId" FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC`,
+            `SELECT id, name, method, protocol, url, description, body, headers, params, "lastResponse", "order", "folderId", assertions FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC`,
             [doc.id]
         );
         doc.requests = requests;
@@ -554,16 +574,16 @@ router.get('/public/:slug', async (req: AuthRequest, res: Response) => {
 // Update documentation slug
 router.patch('/:id/slug', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { id } = req.params;
+        const id = req.params.id as string;
         const schema = z.object({
             slug: z.string().min(3).max(100).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase letters, numbers, and hyphens only'),
         });
 
         const input = schema.parse(req.body);
 
-        const { rows: docs } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        const access = await checkAccess(id, req.user!.userId);
+        if (!access.hasAccess || !canAdmin(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Admin access required to change the public slug' }));
             return;
         }
 
@@ -585,6 +605,42 @@ router.patch('/:id/slug', authMiddleware, async (req: AuthRequest, res: Response
     } catch (error: any) {
         logErrorReport('updateSlug', SERVICE_NAME, error, ERROR_CODES.DOC_SLUG_UPDATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to update slug' }));
+    }
+});
+
+// Export documentation as OpenAPI format
+router.get('/:id/export/openapi', optionalAuthMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const id = req.params.id as string;
+        const { rows } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
+        const doc = rows[0];
+
+        if (!doc) {
+            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+            return;
+        }
+
+        const access = await checkAccess(id, req.user?.userId || '');
+
+        if (!access.hasAccess) {
+            if (!req.user) {
+                res.status(401).json(ApiResponse.error({ message: 'This collection is private. Please login to export it.' }));
+                return;
+            }
+            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+            return;
+        }
+
+        const { rows: requests } = await query('SELECT * FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
+        const { rows: folders } = await query('SELECT * FROM folders WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
+
+        const { generateOpenApiSpec } = await import('../utils/openApiGenerator');
+        const spec = generateOpenApiSpec(doc, requests, folders);
+
+        res.json(spec);
+    } catch (error: any) {
+        logErrorReport('exportOpenApi', SERVICE_NAME, error, 'DOC_EXPORT_OPENAPI_FAILED');
+        res.status(500).json(ApiResponse.error({ message: 'Failed to generate OpenAPI spec' }));
     }
 });
 

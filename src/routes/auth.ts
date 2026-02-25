@@ -16,8 +16,12 @@ const router = Router();
 
 router.post('/register', async (req: Request, res: Response) => {
     try {
-        const schema = z.object({ email: z.string().email(), password: z.string().min(6) });
-        const { email, password } = schema.parse(req.body);
+        const schema = z.object({
+            email: z.string().email(),
+            password: z.string().min(6),
+            inviteToken: z.string().optional()
+        });
+        const { email, password, inviteToken } = schema.parse(req.body);
 
         const { rows: existingUsers } = await query('SELECT * FROM users WHERE email = $1', [email]);
         if (existingUsers.length > 0) {
@@ -26,17 +30,54 @@ router.post('/register', async (req: Request, res: Response) => {
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const { rows } = await query(
-            'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *',
-            [email, hashedPassword]
-        );
-        const user = rows[0];
+        await query('BEGIN');
+        try {
+            const { rows } = await query(
+                'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *',
+                [email, hashedPassword]
+            );
+            const user = rows[0];
 
-        const token = signJwt({ userId: user.id });
-        res.json(ApiResponse.success({
-            message: 'User registered successfully',
-            data: { token, user: { id: user.id, email: user.email } },
-        }));
+            // Handle invitations
+            if (inviteToken) {
+                const { rows: invites } = await query(
+                    'SELECT * FROM invitations WHERE token = $1 AND email = $2 AND "expiresAt" > NOW()',
+                    [inviteToken, email]
+                );
+                if (invites.length > 0) {
+                    const invite = invites[0];
+                    await query(
+                        'INSERT INTO documentation_collaborators ("documentationId", "userId", role) VALUES ($1, $2, $3)',
+                        [invite.documentationId, user.id, invite.role]
+                    );
+                    await query('DELETE FROM invitations WHERE id = $1', [invite.id]);
+                }
+            } else {
+                // Check for any invitations by email
+                const { rows: invites } = await query(
+                    'SELECT * FROM invitations WHERE email = $1 AND "expiresAt" > NOW()',
+                    [email]
+                );
+                for (const invite of invites) {
+                    await query(
+                        'INSERT INTO documentation_collaborators ("documentationId", "userId", role) VALUES ($1, $2, $3)',
+                        [invite.documentationId, user.id, invite.role]
+                    );
+                    await query('DELETE FROM invitations WHERE id = $1', [invite.id]);
+                }
+            }
+
+            await query('COMMIT');
+
+            const token = signJwt({ userId: user.id });
+            res.json(ApiResponse.success({
+                message: 'User registered successfully',
+                data: { token, user: { id: user.id, email: user.email } },
+            }));
+        } catch (error) {
+            await query('ROLLBACK');
+            throw error;
+        }
     } catch (error: any) {
         logErrorReport('register', SERVICE_NAME, error, ERROR_CODES.AUTH_REGISTER_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'Registration failed' }));
@@ -63,6 +104,28 @@ router.post('/login', async (req: Request, res: Response) => {
         }
 
         const token = signJwt({ userId: user.id });
+
+        // Consume invitations for existing users on login
+        await query('BEGIN');
+        try {
+            const { rows: invites } = await query(
+                'SELECT * FROM invitations WHERE email = $1 AND "expiresAt" > NOW()',
+                [user.email]
+            );
+            for (const invite of invites) {
+                await query(
+                    'INSERT INTO documentation_collaborators ("documentationId", "userId", role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+                    [invite.documentationId, user.id, invite.role]
+                );
+                await query('DELETE FROM invitations WHERE id = $1', [invite.id]);
+            }
+            await query('COMMIT');
+        } catch (error) {
+            await query('ROLLBACK');
+            // Log but don't fail login
+            console.error('[Invitation] Failed to consume invitations on login:', error);
+        }
+
         res.json(ApiResponse.success({
             message: 'Login successful',
             data: { token, user: { id: user.id, email: user.email } },

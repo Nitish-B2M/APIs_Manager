@@ -4,6 +4,7 @@ import { query } from '../utils/db';
 import { z } from 'zod';
 import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
+import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { ERROR_CODES } from '../constants/errorCodes';
 
 const SERVICE_NAME = 'FolderService';
@@ -12,14 +13,10 @@ const router = Router();
 // Get all folders for a documentation
 router.get('/:documentationId/folders', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { documentationId } = req.params;
+        const documentationId = req.params.documentationId as string;
 
-        const { rows: docs } = await query(
-            'SELECT "userId" FROM documentation WHERE id = $1',
-            [documentationId]
-        );
-
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
+        const access = await checkAccess(documentationId, req.user!.userId);
+        if (!access.hasAccess) {
             res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
             return;
         }
@@ -44,7 +41,7 @@ router.get('/:documentationId/folders', authMiddleware, async (req: AuthRequest,
 // Create a new folder
 router.post('/:documentationId/folders', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { documentationId } = req.params;
+        const documentationId = req.params.documentationId as string;
         const schema = z.object({
             name: z.string().min(1).max(100),
             description: z.string().optional(),
@@ -53,13 +50,10 @@ router.post('/:documentationId/folders', authMiddleware, async (req: AuthRequest
 
         const input = schema.parse(req.body);
 
-        const { rows: docs } = await query(
-            'SELECT "userId" FROM documentation WHERE id = $1',
-            [documentationId]
-        );
+        const access = await checkAccess(documentationId, req.user!.userId);
 
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required to create folders' }));
             return;
         }
 
@@ -119,8 +113,14 @@ router.patch('/folders/:folderId', authMiddleware, async (req: AuthRequest, res:
             [folderId]
         );
 
-        if (!folders[0] || folders[0].userId !== req.user!.userId) {
+        if (!folders[0]) {
             res.status(404).json(ApiResponse.error({ message: 'Folder not found' }));
+            return;
+        }
+
+        const access = await checkAccess(folders[0].documentationId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
             return;
         }
 
@@ -192,8 +192,14 @@ router.delete('/folders/:folderId', authMiddleware, async (req: AuthRequest, res
             [folderId]
         );
 
-        if (!folders[0] || folders[0].userId !== req.user!.userId) {
+        if (!folders[0]) {
             res.status(404).json(ApiResponse.error({ message: 'Folder not found' }));
+            return;
+        }
+
+        const access = await checkAccess(folders[0].documentationId, req.user!.userId);
+        if (!access.hasAccess || !canAdmin(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Admin access required to delete folders' }));
             return;
         }
 
@@ -235,7 +241,7 @@ router.delete('/folders/:folderId', authMiddleware, async (req: AuthRequest, res
 // Move request to folder
 router.patch('/request/:requestId/move', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { requestId } = req.params;
+        const requestId = req.params.requestId as string;
         const schema = z.object({
             folderId: z.string().uuid().optional().nullable()
         });
@@ -250,8 +256,14 @@ router.patch('/request/:requestId/move', authMiddleware, async (req: AuthRequest
             [requestId]
         );
 
-        if (!requests[0] || requests[0].userId !== req.user!.userId) {
+        if (!requests[0]) {
             res.status(404).json(ApiResponse.error({ message: 'Request not found' }));
+            return;
+        }
+
+        const access = await checkAccess(requests[0].documentationId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required to move requests' }));
             return;
         }
 
@@ -284,7 +296,7 @@ router.patch('/request/:requestId/move', authMiddleware, async (req: AuthRequest
 // Reorder folders
 router.patch('/:documentationId/folders/reorder', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { documentationId } = req.params;
+        const documentationId = req.params.documentationId as string;
         const schema = z.object({
             folders: z.array(z.object({
                 id: z.string().uuid(),
@@ -295,13 +307,10 @@ router.patch('/:documentationId/folders/reorder', authMiddleware, async (req: Au
 
         const input = schema.parse(req.body);
 
-        const { rows: docs } = await query(
-            'SELECT "userId" FROM documentation WHERE id = $1',
-            [documentationId]
-        );
+        const access = await checkAccess(documentationId, req.user!.userId);
 
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
             return;
         }
 

@@ -4,6 +4,7 @@ import { query } from '../utils/db';
 import { z } from 'zod';
 import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
+import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { ERROR_CODES } from '../constants/errorCodes';
 
 const SERVICE_NAME = 'EnvironmentService';
@@ -16,14 +17,10 @@ const router = Router();
 // Get all environments for a documentation
 router.get('/:documentationId/environments', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { documentationId } = req.params;
+        const documentationId = req.params.documentationId as string;
 
-        const { rows: docs } = await query(
-            'SELECT "userId" FROM documentation WHERE id = $1',
-            [documentationId]
-        );
-
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
+        const access = await checkAccess(documentationId, req.user!.userId);
+        if (!access.hasAccess) {
             res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
             return;
         }
@@ -48,7 +45,7 @@ router.get('/:documentationId/environments', authMiddleware, async (req: AuthReq
 // Create a new collection environment
 router.post('/:documentationId/environments', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { documentationId } = req.params;
+        const documentationId = req.params.documentationId as string;
         const schema = z.object({
             name: z.string().min(1).max(50),
             variables: z.record(z.string()).optional().default({}),
@@ -58,13 +55,9 @@ router.post('/:documentationId/environments', authMiddleware, async (req: AuthRe
 
         const input = schema.parse(req.body);
 
-        const { rows: docs } = await query(
-            'SELECT "userId" FROM documentation WHERE id = $1',
-            [documentationId]
-        );
-
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        const access = await checkAccess(documentationId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
             return;
         }
 
@@ -111,20 +104,16 @@ router.post('/:documentationId/environments', authMiddleware, async (req: AuthRe
 // Set active environment for collection
 router.patch('/:documentationId/environments/set-active', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { documentationId } = req.params;
+        const documentationId = req.params.documentationId as string;
         const schema = z.object({
             environmentId: z.string().uuid().nullable()
         });
 
         const input = schema.parse(req.body);
 
-        const { rows: docs } = await query(
-            'SELECT "userId" FROM documentation WHERE id = $1',
-            [documentationId]
-        );
-
-        if (!docs[0] || docs[0].userId !== req.user!.userId) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+        const access = await checkAccess(documentationId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
             return;
         }
 
@@ -303,11 +292,10 @@ router.patch('/environments/:environmentId', authMiddleware, async (req: AuthReq
 
         const input = schema.parse(req.body);
 
-        // Check ownership
+        // Fetch the environment first
         const { rows: envs } = await query(
-            `SELECT * FROM environments 
-             WHERE id = $1 AND "userId" = $2`,
-            [environmentId, req.user!.userId]
+            `SELECT * FROM environments WHERE id = $1`,
+            [environmentId]
         );
 
         if (!envs[0]) {
@@ -316,6 +304,20 @@ router.patch('/environments/:environmentId', authMiddleware, async (req: AuthReq
         }
 
         const env = envs[0];
+
+        // Ensure authorization based on scope
+        if (env.scope === 'GLOBAL') {
+            if (env.userId !== req.user!.userId) {
+                res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
+                return;
+            }
+        } else if (env.scope === 'COLLECTION') {
+            const access = await checkAccess(env.documentationId, req.user!.userId);
+            if (!access.hasAccess || !canEdit(access.role)) {
+                res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
+                return;
+            }
+        }
 
         await query('BEGIN');
 
@@ -398,14 +400,29 @@ router.delete('/environments/:environmentId', authMiddleware, async (req: AuthRe
         const { environmentId } = req.params;
 
         const { rows: envs } = await query(
-            `SELECT * FROM environments 
-             WHERE id = $1 AND "userId" = $2`,
-            [environmentId, req.user!.userId]
+            `SELECT * FROM environments WHERE id = $1`,
+            [environmentId]
         );
 
         if (!envs[0]) {
             res.status(404).json(ApiResponse.error({ message: 'Environment not found' }));
             return;
+        }
+
+        const env = envs[0];
+
+        // Ensure authorization based on scope
+        if (env.scope === 'GLOBAL') {
+            if (env.userId !== req.user!.userId) {
+                res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
+                return;
+            }
+        } else if (env.scope === 'COLLECTION') {
+            const access = await checkAccess(env.documentationId, req.user!.userId);
+            if (!access.hasAccess || !canAdmin(access.role)) {
+                res.status(403).json(ApiResponse.error({ message: 'Forbidden: Admin access required to delete collection environments' }));
+                return;
+            }
         }
 
         const { rows } = await query('DELETE FROM environments WHERE id = $1 RETURNING *', [environmentId]);
