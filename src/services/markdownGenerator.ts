@@ -19,6 +19,7 @@ export interface Endpoint {
     headers: { key: string; value: string; description?: string }[];
     body: any;
     description: string;
+    protocol: string;
     response: any[];
 }
 
@@ -44,6 +45,7 @@ export const extractEndpoints = (items: PostmanItem[], parentFolder = ''): Endpo
                 headers: item.request.header || [],
                 body: item.request.body,
                 description: item.request.description || '',
+                protocol: 'REST', // Default to REST for Postman imports for now
                 response: item.response || []
             });
         }
