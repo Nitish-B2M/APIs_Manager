@@ -97,10 +97,83 @@ export async function runMonitorCheck(monitorId: string): Promise<void> {
         console.error(`[Monitor] Failed to save result for ${monitorId}:`, err);
     }
 
-    if (!isSuccess && monitor.notifyEmail) {
-        console.log(`[Monitor] ALERT: Monitor "${monitor.name}" failed. Notify: ${monitor.notifyEmail}`);
+    if (!isSuccess) {
+        if (monitor.notifyEmail) {
+            console.log(`[Monitor] ALERT: Monitor "${monitor.name}" failed. Notify: ${monitor.notifyEmail}`);
+        }
+        if (monitor.webhookUrl) {
+            await sendWebhookNotification(monitor, {
+                statusCode,
+                responseTime,
+                errorMessage,
+                checkedAt: new Date()
+            });
+        }
     }
     console.log(`[Monitor] Check: "${monitor.name}" -> ${isSuccess ? '✅' : '❌'} ${statusCode ?? 'ERR'} (${responseTime}ms)`);
+}
+
+async function sendWebhookNotification(monitor: any, result: any) {
+    const { webhookUrl, webhookType, name, url } = monitor;
+    console.log(`[Monitor] Sending ${webhookType} webhook alert to ${webhookUrl}`);
+
+    try {
+        if (webhookType === 'slack') {
+            await axios.post(webhookUrl, {
+                blocks: [
+                    {
+                        type: "header",
+                        text: {
+                            type: "plain_text",
+                            text: "🚨 Monitor Alert: Request Failed",
+                            emoji: true
+                        }
+                    },
+                    {
+                        type: "section",
+                        fields: [
+                            { type: "mrkdwn", text: `*Monitor Name:*\n${name}` },
+                            { type: "mrkdwn", text: `*Target URL:*\n${url}` }
+                        ]
+                    },
+                    {
+                        type: "section",
+                        fields: [
+                            { type: "mrkdwn", text: `*Status Code:*\n${result.statusCode ?? 'ERR'}` },
+                            { type: "mrkdwn", text: `*Response Time:*\n${result.responseTime}ms` }
+                        ]
+                    },
+                    {
+                        type: "section",
+                        text: {
+                            type: "mrkdwn",
+                            text: `*Error:*\n\`${result.errorMessage || 'Unknown error'}\``
+                        }
+                    },
+                    {
+                        type: "context",
+                        elements: [
+                            { type: "mrkdwn", text: `Checked at: ${result.checkedAt.toISOString()}` }
+                        ]
+                    }
+                ]
+            });
+        } else {
+            // Generic Webhook
+            await axios.post(webhookUrl, {
+                event: 'monitor.failure',
+                monitor: { id: monitor.id, name, url, method: monitor.method },
+                result: {
+                    statusCode: result.statusCode,
+                    responseTime: result.responseTime,
+                    error: result.errorMessage,
+                    checkedAt: result.checkedAt
+                }
+            });
+        }
+    } catch (err: any) {
+        console.error(`[Monitor] Failed to send webhook for ${monitor.id}:`, err.message);
+    }
 }
 
 export async function createMonitor(data: {
@@ -113,10 +186,12 @@ export async function createMonitor(data: {
     body?: string;
     frequency: string;
     notifyEmail?: string;
+    webhookUrl?: string;
+    webhookType?: string;
 }) {
     const result = await query(
-        `INSERT INTO monitors ("documentationId", "requestId", name, url, method, headers, body, frequency, "notifyEmail")
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        `INSERT INTO monitors ("documentationId", "requestId", name, url, method, headers, body, frequency, "notifyEmail", "webhookUrl", "webhookType")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
         [
             data.documentationId,
             data.requestId || null,
@@ -127,6 +202,8 @@ export async function createMonitor(data: {
             data.body || null,
             data.frequency || '5min',
             data.notifyEmail || null,
+            data.webhookUrl || null,
+            data.webhookType || 'generic'
         ]
     );
     const monitor = result.rows[0];
@@ -163,6 +240,7 @@ export async function getMonitorHistory(monitorId: string, limit = 100) {
 export async function updateMonitor(monitorId: string, data: Partial<{
     name: string; url: string; method: string; headers: any[];
     body: string; frequency: string; isActive: boolean; notifyEmail: string;
+    webhookUrl: string; webhookType: string;
 }>) {
     const result = await query(
         `UPDATE monitors SET
@@ -174,12 +252,15 @@ export async function updateMonitor(monitorId: string, data: Partial<{
             frequency = COALESCE($6, frequency),
             "isActive" = COALESCE($7, "isActive"),
             "notifyEmail" = COALESCE($8, "notifyEmail"),
+            "webhookUrl" = COALESCE($9, "webhookUrl"),
+            "webhookType" = COALESCE($10, "webhookType"),
             "updatedAt" = NOW()
-         WHERE id = $9 RETURNING *`,
+         WHERE id = $11 RETURNING *`,
         [
             data.name, data.url, data.method,
             data.headers ? JSON.stringify(data.headers) : null,
             data.body, data.frequency, data.isActive, data.notifyEmail,
+            data.webhookUrl, data.webhookType,
             monitorId
         ]
     );

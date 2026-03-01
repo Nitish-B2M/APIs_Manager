@@ -72,7 +72,7 @@ router.post('/register', async (req: Request, res: Response) => {
             const token = signJwt({ userId: user.id });
             res.json(ApiResponse.success({
                 message: 'User registered successfully',
-                data: { token, user: { id: user.id, email: user.email } },
+                data: { token, user: { id: user.id, email: user.email, isAdmin: user.is_admin } },
             }));
         } catch (error) {
             await query('ROLLBACK');
@@ -128,7 +128,7 @@ router.post('/login', async (req: Request, res: Response) => {
 
         res.json(ApiResponse.success({
             message: 'Login successful',
-            data: { token, user: { id: user.id, email: user.email } },
+            data: { token, user: { id: user.id, email: user.email, isAdmin: user.is_admin } },
         }));
     } catch (error: any) {
         logErrorReport('login', SERVICE_NAME, error, ERROR_CODES.AUTH_LOGIN_FAILED);
@@ -152,7 +152,14 @@ router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
 
         res.json(ApiResponse.success({
             message: 'Profile fetched',
-            data: { id: rows[0].id, email: rows[0].email, name: rows[0].name || null, avatarUrl: rows[0].avatar_url || null },
+            data: {
+                id: rows[0].id,
+                email: rows[0].email,
+                name: rows[0].name || null,
+                avatarUrl: rows[0].avatar_url || null,
+                isAdmin: rows[0].is_admin,
+                settings: rows[0].settings || {}
+            },
         }));
     } catch (error: any) {
         logErrorReport('getProfile', SERVICE_NAME, error, ERROR_CODES.AUTH_PROFILE_FETCH_FAILED);
@@ -171,6 +178,7 @@ router.patch('/profile', authMiddleware, async (req: AuthRequest, res: Response)
         const schema = z.object({
             name: z.string().max(100).optional(),
             avatarUrl: z.string().url().max(500).optional().nullable(),
+            settings: z.record(z.any()).optional(),
         });
 
         const input = schema.parse(req.body);
@@ -189,6 +197,11 @@ router.patch('/profile', authMiddleware, async (req: AuthRequest, res: Response)
             values.push(input.avatarUrl);
             idx++;
         }
+        if (input.settings !== undefined) {
+            fields.push(`settings = $${idx}`);
+            values.push(input.settings);
+            idx++;
+        }
 
         if (fields.length === 0) {
             res.status(400).json(ApiResponse.error({ message: 'No fields to update' }));
@@ -205,7 +218,13 @@ router.patch('/profile', authMiddleware, async (req: AuthRequest, res: Response)
 
         res.json(ApiResponse.success({
             message: 'Profile updated successfully',
-            data: { id: rows[0].id, email: rows[0].email, name: rows[0].name, avatarUrl: rows[0].avatar_url },
+            data: {
+                id: rows[0].id,
+                email: rows[0].email,
+                name: rows[0].name,
+                avatarUrl: rows[0].avatar_url,
+                settings: rows[0].settings || {}
+            },
         }));
     } catch (error: any) {
         logErrorReport('updateProfile', SERVICE_NAME, error, ERROR_CODES.AUTH_PROFILE_UPDATE_FAILED);

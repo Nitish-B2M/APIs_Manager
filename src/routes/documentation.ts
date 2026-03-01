@@ -31,6 +31,7 @@ router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
                                 'folderId', r."folderId",
                                 'order', r."order",
                                 'assertions', r.assertions,
+                                'responseSchema', r."responseSchema",
                                 'updatedAt', r."updatedAt"
                             )
                         ) FILTER (WHERE r.id IS NOT NULL),
@@ -263,6 +264,94 @@ router.patch('/:id', authMiddleware, async (req: AuthRequest, res: Response) => 
     }
 });
 
+// Bulk delete requests
+router.post('/request/bulk-delete', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const schema = z.object({
+            requestIds: z.array(z.string().uuid())
+        });
+        const { requestIds } = schema.parse(req.body);
+
+        if (requestIds.length === 0) {
+            res.status(400).json(ApiResponse.error({ message: 'No request IDs provided' }));
+            return;
+        }
+
+        // Get the documentationId of the first request to verify access
+        const { rows: reqs } = await query('SELECT "documentationId" FROM requests WHERE id = $1', [requestIds[0]]);
+        if (!reqs[0]) {
+            res.status(404).json(ApiResponse.error({ message: 'Requests not found' }));
+            return;
+        }
+
+        const docId = reqs[0].documentationId;
+        const access = await checkAccess(docId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
+            return;
+        }
+
+        await query('BEGIN');
+        try {
+            await query('DELETE FROM requests WHERE id = ANY($1) AND "documentationId" = $2', [requestIds, docId]);
+            await query('UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1', [docId]);
+            await query('COMMIT');
+            res.json(ApiResponse.success({ message: `${requestIds.length} requests deleted` }));
+        } catch (err) {
+            await query('ROLLBACK');
+            throw err;
+        }
+    } catch (error: any) {
+        logErrorReport('bulkDeleteRequests', SERVICE_NAME, error, 'DOC_BULK_DELETE_FAILED');
+        res.status(500).json(ApiResponse.error({ message: 'Failed to delete requests' }));
+    }
+});
+
+// Bulk move requests to a folder
+router.patch('/request/bulk-move', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const schema = z.object({
+            requestIds: z.array(z.string().uuid()),
+            folderId: z.string().uuid().nullable()
+        });
+        const { requestIds, folderId } = schema.parse(req.body);
+
+        if (requestIds.length === 0) {
+            res.status(400).json(ApiResponse.error({ message: 'No request IDs provided' }));
+            return;
+        }
+
+        const { rows: reqs } = await query('SELECT "documentationId" FROM requests WHERE id = $1', [requestIds[0]]);
+        if (!reqs[0]) {
+            res.status(404).json(ApiResponse.error({ message: 'Requests not found' }));
+            return;
+        }
+
+        const docId = reqs[0].documentationId;
+        const access = await checkAccess(docId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
+            return;
+        }
+
+        await query('BEGIN');
+        try {
+            // Explicitly cast to uuid array for safer comparison
+            await query('UPDATE requests SET "folderId" = $1, "updatedAt" = CURRENT_TIMESTAMP WHERE id = ANY($2::uuid[]) AND "documentationId" = $3', [folderId, requestIds, docId]);
+            await query('UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1', [docId]);
+            await query('COMMIT');
+            res.json(ApiResponse.success({ message: `${requestIds.length} requests moved` }));
+        } catch (err) {
+            await query('ROLLBACK');
+            throw err;
+        }
+    } catch (error: any) {
+        logErrorReport('bulkMoveRequests', SERVICE_NAME, error, 'DOC_BULK_MOVE_FAILED');
+        const errorMsg = error.message || 'Failed to move requests';
+        res.status(500).json(ApiResponse.error({ message: errorMsg }));
+    }
+});
+
 // Update a single request
 router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
@@ -282,7 +371,7 @@ router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res
             return;
         }
 
-        const fields = ['name', 'method', 'protocol', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'history', 'order', 'folderId', 'auth', 'assertions'];
+        const fields = ['name', 'method', 'protocol', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'history', 'order', 'folderId', 'auth', 'assertions', 'responseSchema'];
         const updates: string[] = [];
         const values: any[] = [];
         let count = 1;
@@ -548,7 +637,7 @@ router.get('/public/:slug', async (req: AuthRequest, res: Response) => {
         }
 
         const { rows: requests } = await query(
-            `SELECT id, name, method, protocol, url, description, body, headers, params, "lastResponse", "order", "folderId", assertions FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC`,
+            `SELECT id, name, method, protocol, url, description, body, headers, params, "lastResponse", "order", "folderId", assertions, "responseSchema" FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC`,
             [doc.id]
         );
         doc.requests = requests;

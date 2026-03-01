@@ -49,3 +49,9 @@ export async function sendEmail(to: string, subject: string, html: string) {
         throw new Error(`Failed to send email: ${error.message || 'Unknown error'}`);
     }
 }
+
+export function parseTemplate(template: string, vars: Record<string, string>): string {
+    return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
+        return vars[key] || match;
+    });
+}
