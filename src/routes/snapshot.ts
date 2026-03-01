@@ -57,6 +57,34 @@ router.get('/list/:documentationId', authMiddleware, async (req: AuthRequest, re
     }
 });
 
+// Get individual snapshot
+router.get('/:snapshotId', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const snapshotId = req.params.snapshotId as string;
+        const { rows: snapshots } = await query('SELECT * FROM snapshots WHERE id = $1', [snapshotId]);
+
+        if (!snapshots[0]) {
+            res.status(404).json(ApiResponse.error({ message: 'Snapshot not found' }));
+            return;
+        }
+
+        const access = await checkAccess(snapshots[0].documentationId, req.user!.userId);
+        if (!access.hasAccess) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Access required to view snapshots' }));
+            return;
+        }
+
+        res.json(ApiResponse.success({
+            message: 'Snapshot fetched successfully',
+            data: snapshots[0]
+        }));
+        return;
+    } catch (error: any) {
+        res.status(500).json(ApiResponse.error({ message: error.message }));
+        return;
+    }
+});
+
 // Restore snapshot
 router.post('/restore/:snapshotId', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
