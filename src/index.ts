@@ -13,6 +13,9 @@ import mockRoutes from './routes/mock';
 import snapshotRoutes from './routes/snapshot';
 import monitorRoutes from './routes/monitor';
 import collaborationRoutes from './routes/collaboration';
+import adminRoutes from './routes/admin';
+import schedulerRoutes from './routes/scheduler';
+import contactRoutes from './routes/contact';
 import { initMonitors } from './services/monitorService';
 
 const app = express();
@@ -65,6 +68,9 @@ app.use('/api/mock', generalLimiter, mockRoutes);
 app.use('/api/snapshot', generalLimiter, snapshotRoutes);
 app.use('/api/monitor', generalLimiter, monitorRoutes);
 app.use('/api/collaboration', generalLimiter, collaborationRoutes);
+app.use('/api/admin', generalLimiter, adminRoutes);
+app.use('/api/scheduler', generalLimiter, schedulerRoutes);
+app.use('/api/contact', generalLimiter, contactRoutes);
 app.use('/m', mockRoutes);
 
 app.get('/', (req, res) => {

@@ -10,12 +10,12 @@ import dotenv from 'dotenv';
 dotenv.config({ path: __dirname + '/../../.env' });
 
 async function runMigration() {
-    console.log('🔄 Running migration: Add history column to requests table...\n');
+    console.log('🔄 Running migration: Add settings column to users table...\n');
 
     try {
-        // Add history column
+        // Add settings column to users table
         await query(`
-            ALTER TABLE requests ADD COLUMN IF NOT EXISTS history JSONB DEFAULT '[]'::jsonb;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'::jsonb;
         `);
 
         console.log('✅ Migration completed successfully!');
@@ -24,7 +24,7 @@ async function runMigration() {
         const verifyResult = await query(`
             SELECT column_name, data_type, column_default 
             FROM information_schema.columns 
-            WHERE table_name = 'requests' AND column_name = 'history';
+            WHERE table_name = 'users' AND column_name = 'settings';
         `);
 
         console.log('\n📋 Column details:');
