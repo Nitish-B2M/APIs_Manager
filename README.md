@@ -1,6 +1,6 @@
-# Postman Documentation Generator - Server
+# DevManus Documentation Generator - Server
 
-Backend API for the Postman Documentation Generator built with Express.js and PostgreSQL.
+Backend API for the DevManus Documentation Generator built with Express.js and PostgreSQL.
 
 ![Express](https://img.shields.io/badge/Express-4.21.2?style=for-the-badge&logo=express)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-blue?style=for-the-badge&logo=postgresql)
@@ -91,7 +91,7 @@ cp .env.example .env
 
 # Edit .env with your database credentials
 # Example:
-# DATABASE_URL=postgresql://user:password@localhost:5432/postman_docs
+# DATABASE_URL=postgresql://user:password@localhost:5432/devmanus_docs
 # JWT_SECRET=your-secret-key
 
 # Initialize database
@@ -107,7 +107,7 @@ The server will be available at `http://localhost:4001`
 
 ```env
 # Database Connection
-DATABASE_URL=postgresql://user:password@localhost:5432/postman_docs
+DATABASE_URL=postgresql://user:password@localhost:5432/devmanus_docs
 
 # Server Configuration
 PORT=4001
@@ -128,10 +128,10 @@ GEMINI_API_KEY=your-gemini-api-key-for-ai-docs
 
 ```bash
 # Build the image
-docker build -t postman-docs-server .
+docker build -t devmanus-docs-server .
 
 # Run the container
-docker run -p 4001:4001 postman-docs-server
+docker run -p 4001:4001 devmanus-docs-server
 ```
 
 ### Docker Compose
@@ -205,7 +205,7 @@ server/
 │   │   ├── documentation.ts # Documentation CRUD
 │   │   └── ai.ts           # AI features
 │   ├── services/           # Business logic
-│   │   ├── parser.ts       # Postman collection parser
+│   │   ├── parser.ts       # DevManus collection parser
 │   │   ├── markdownGenerator.ts
 │   │   └── aiService.ts    # Gemini AI integration
 │   ├── middleware/         # Express middleware

@@ -1,6 +1,6 @@
-interface PostmanItem {
+interface DevManusItem {
     name: string;
-    item?: PostmanItem[];
+    item?: DevManusItem[];
     request?: {
         method: string;
         url: { raw: string; host?: string[]; path?: string[] } | string;
@@ -37,7 +37,7 @@ export const parseCollection = (collection: any): ParsedGroup[] => {
     return collection.item.map((item: any) => parseItem(item));
 };
 
-const parseItem = (item: PostmanItem): ParsedGroup | ParsedEndpoint => {
+const parseItem = (item: DevManusItem): ParsedGroup | ParsedEndpoint => {
     if (item.item) {
         return {
             id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(), // basic fallback

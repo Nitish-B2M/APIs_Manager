@@ -1,10 +1,10 @@
 export function generateOpenApiSpec(doc: any, requests: any[], folders: any[]) {
     const spec: any = {
-        openapi: '3.0.0',
+        openapi: '3.1.0',
         info: {
             title: doc.title,
             version: '1.0.0',
-            description: 'Exported from Postman Docs'
+            description: doc.content?.collection?.description || 'Exported from DevManus Docs'
         },
         servers: [
             {

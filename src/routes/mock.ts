@@ -85,7 +85,20 @@ router.all('/:requestId*', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, mock.delay));
         }
 
-        // Apply headers
+        // Evaluate conditional rules
+        const matchedRule = mockService.evaluateRules(mock.rules, req);
+        
+        if (matchedRule) {
+            if (matchedRule.headers) {
+                Object.entries(matchedRule.headers).forEach(([key, value]) => {
+                    res.setHeader(key, String(value));
+                });
+            }
+            res.status(matchedRule.statusCode).send(matchedRule.body);
+            return;
+        }
+
+        // Apply default headers
         if (mock.headers) {
             Object.entries(mock.headers).forEach(([key, value]) => {
                 res.setHeader(key, String(value));

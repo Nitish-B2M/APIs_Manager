@@ -61,6 +61,7 @@ router.post('/:documentationId/environments', authMiddleware, async (req: AuthRe
             return;
         }
 
+        console.log(`[EnvironmentService] Creating environment for doc: ${documentationId}`, input);
         await query('BEGIN');
 
         try {
@@ -86,7 +87,7 @@ router.post('/:documentationId/environments', authMiddleware, async (req: AuthRe
             );
 
             await query('COMMIT');
-
+            console.log(`[EnvironmentService] Environment created successfully: ${rows[0].id}`);
             res.json(ApiResponse.success({
                 message: 'Environment created successfully',
                 data: rows[0],
@@ -96,8 +97,9 @@ router.post('/:documentationId/environments', authMiddleware, async (req: AuthRe
             throw error;
         }
     } catch (error: any) {
+        console.error(`[EnvironmentService] Error creating environment:`, error);
         logErrorReport('createEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_CREATE_FAILED);
-        res.status(400).json(ApiResponse.error({ message: 'Failed to create environment' }));
+        res.status(400).json(ApiResponse.error({ message: `Failed to create environment: ${error.message}` }));
     }
 });
 
@@ -189,6 +191,7 @@ router.post('/global', authMiddleware, async (req: AuthRequest, res: Response) =
 
         const input = schema.parse(req.body);
 
+        console.log(`[EnvironmentService] Creating global environment for user: ${req.user!.userId}`, input);
         await query('BEGIN');
 
         try {
@@ -214,6 +217,7 @@ router.post('/global', authMiddleware, async (req: AuthRequest, res: Response) =
             );
 
             await query('COMMIT');
+            console.log(`[EnvironmentService] Global environment created successfully: ${rows[0].id}`);
 
             res.json(ApiResponse.success({
                 message: 'Global environment created successfully',
@@ -224,8 +228,9 @@ router.post('/global', authMiddleware, async (req: AuthRequest, res: Response) =
             throw error;
         }
     } catch (error: any) {
+        console.error(`[EnvironmentService] Error creating global environment:`, error);
         logErrorReport('createGlobalEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_CREATE_FAILED);
-        res.status(400).json(ApiResponse.error({ message: 'Failed to create global environment' }));
+        res.status(400).json(ApiResponse.error({ message: `Failed to create global environment: ${error.message}` }));
     }
 });
 

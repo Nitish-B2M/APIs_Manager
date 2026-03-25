@@ -1,6 +1,6 @@
-export interface PostmanItem {
+export interface DevManusItem {
     name: string;
-    item?: PostmanItem[];
+    item?: DevManusItem[];
     request?: {
         method: string;
         url: { raw: string; host?: string[]; path?: string[] } | string;
@@ -23,8 +23,8 @@ export interface Endpoint {
     response: any[];
 }
 
-// Extract API endpoints from collection (Logic from postman-doc-gen.tsx)
-export const extractEndpoints = (items: PostmanItem[], parentFolder = ''): Endpoint[] => {
+// Extract API endpoints from collection (Logic from devmanus-doc-gen.tsx)
+export const extractEndpoints = (items: DevManusItem[], parentFolder = ''): Endpoint[] => {
     const endpoints: Endpoint[] = [];
 
     items.forEach(item => {
@@ -45,7 +45,7 @@ export const extractEndpoints = (items: PostmanItem[], parentFolder = ''): Endpo
                 headers: item.request.header || [],
                 body: item.request.body,
                 description: item.request.description || '',
-                protocol: 'REST', // Default to REST for Postman imports for now
+                protocol: 'REST', // Default to REST for DevManus imports for now
                 response: item.response || []
             });
         }

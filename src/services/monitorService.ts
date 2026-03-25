@@ -1,6 +1,8 @@
 import * as cron from 'node-cron';
 import axios from 'axios';
+import * as crypto from 'crypto';
 import { query } from '../utils/db';
+import { webhookService } from './webhookService';
 
 // Map of active cron jobs: monitorId -> cron.ScheduledTask
 const activeJobs = new Map<string, cron.ScheduledTask>();
@@ -109,68 +111,89 @@ export async function runMonitorCheck(monitorId: string): Promise<void> {
                 checkedAt: new Date()
             });
         }
+
+        // Global Webhook System
+        webhookService.dispatch({
+            event: 'monitor.failure',
+            documentationId: monitor.documentationId,
+            payload: {
+                monitorId: monitor.id,
+                name: monitor.name,
+                url: monitor.url,
+                statusCode,
+                error: errorMessage
+            }
+        });
     }
     console.log(`[Monitor] Check: "${monitor.name}" -> ${isSuccess ? '✅' : '❌'} ${statusCode ?? 'ERR'} (${responseTime}ms)`);
 }
 
 async function sendWebhookNotification(monitor: any, result: any) {
-    const { webhookUrl, webhookType, name, url } = monitor;
+    const { webhookUrl, webhookType, webhookSecret, name, url } = monitor;
     console.log(`[Monitor] Sending ${webhookType} webhook alert to ${webhookUrl}`);
 
-    try {
-        if (webhookType === 'slack') {
-            await axios.post(webhookUrl, {
-                blocks: [
-                    {
-                        type: "header",
-                        text: {
-                            type: "plain_text",
-                            text: "🚨 Monitor Alert: Request Failed",
-                            emoji: true
-                        }
-                    },
-                    {
-                        type: "section",
-                        fields: [
-                            { type: "mrkdwn", text: `*Monitor Name:*\n${name}` },
-                            { type: "mrkdwn", text: `*Target URL:*\n${url}` }
-                        ]
-                    },
-                    {
-                        type: "section",
-                        fields: [
-                            { type: "mrkdwn", text: `*Status Code:*\n${result.statusCode ?? 'ERR'}` },
-                            { type: "mrkdwn", text: `*Response Time:*\n${result.responseTime}ms` }
-                        ]
-                    },
-                    {
-                        type: "section",
-                        text: {
-                            type: "mrkdwn",
-                            text: `*Error:*\n\`${result.errorMessage || 'Unknown error'}\``
-                        }
-                    },
-                    {
-                        type: "context",
-                        elements: [
-                            { type: "mrkdwn", text: `Checked at: ${result.checkedAt.toISOString()}` }
-                        ]
-                    }
-                ]
-            });
-        } else {
-            // Generic Webhook
-            await axios.post(webhookUrl, {
-                event: 'monitor.failure',
-                monitor: { id: monitor.id, name, url, method: monitor.method },
-                result: {
-                    statusCode: result.statusCode,
-                    responseTime: result.responseTime,
-                    error: result.errorMessage,
-                    checkedAt: result.checkedAt
+    const payload = webhookType === 'slack' ? {
+        blocks: [
+            {
+                type: "header",
+                text: {
+                    type: "plain_text",
+                    text: "🚨 Monitor Alert: Request Failed",
+                    emoji: true
                 }
-            });
+            },
+            {
+                type: "section",
+                fields: [
+                    { type: "mrkdwn", text: `*Monitor Name:*\n${name}` },
+                    { type: "mrkdwn", text: `*Target URL:*\n${url}` }
+                ]
+            },
+            {
+                type: "section",
+                fields: [
+                    { type: "mrkdwn", text: `*Status Code:*\n${result.statusCode ?? 'ERR'}` },
+                    { type: "mrkdwn", text: `*Response Time:*\n${result.responseTime}ms` }
+                ]
+            },
+            {
+                type: "section",
+                text: {
+                    type: "mrkdwn",
+                    text: `*Error:*\n\`${result.errorMessage || 'Unknown error'}\``
+                }
+            },
+            {
+                type: "context",
+                elements: [
+                    { type: "mrkdwn", text: `Checked at: ${result.checkedAt.toISOString()}` }
+                ]
+            }
+        ]
+    } : {
+        event: 'monitor.failure',
+        monitor: { id: monitor.id, name, url, method: monitor.method },
+        result: {
+            statusCode: result.statusCode,
+            responseTime: result.responseTime,
+            error: result.errorMessage,
+            checkedAt: result.checkedAt
         }
+    };
+
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+    };
+
+    // If a secret is provided, add an HMAC signature header
+    if (webhookSecret && webhookType !== 'slack') {
+        const hmac = crypto.createHmac('sha256', webhookSecret);
+        const signature = hmac.update(JSON.stringify(payload)).digest('hex');
+        headers['X-Monitor-Signature'] = `sha256=${signature}`;
+    }
+
+    try {
+        await axios.post(webhookUrl, payload, { headers });
     } catch (err: any) {
         console.error(`[Monitor] Failed to send webhook for ${monitor.id}:`, err.message);
     }
@@ -188,10 +211,11 @@ export async function createMonitor(data: {
     notifyEmail?: string;
     webhookUrl?: string;
     webhookType?: string;
+    webhookSecret?: string;
 }) {
     const result = await query(
-        `INSERT INTO monitors ("documentationId", "requestId", name, url, method, headers, body, frequency, "notifyEmail", "webhookUrl", "webhookType")
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+        `INSERT INTO monitors ("documentationId", "requestId", name, url, method, headers, body, frequency, "notifyEmail", "webhookUrl", "webhookType", "webhookSecret")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
         [
             data.documentationId,
             data.requestId || null,
@@ -203,7 +227,8 @@ export async function createMonitor(data: {
             data.frequency || '5min',
             data.notifyEmail || null,
             data.webhookUrl || null,
-            data.webhookType || 'generic'
+            data.webhookType || 'generic',
+            data.webhookSecret || null
         ]
     );
     const monitor = result.rows[0];
@@ -240,7 +265,7 @@ export async function getMonitorHistory(monitorId: string, limit = 100) {
 export async function updateMonitor(monitorId: string, data: Partial<{
     name: string; url: string; method: string; headers: any[];
     body: string; frequency: string; isActive: boolean; notifyEmail: string;
-    webhookUrl: string; webhookType: string;
+    webhookUrl: string; webhookType: string; webhookSecret: string;
 }>) {
     const result = await query(
         `UPDATE monitors SET
@@ -254,13 +279,14 @@ export async function updateMonitor(monitorId: string, data: Partial<{
             "notifyEmail" = COALESCE($8, "notifyEmail"),
             "webhookUrl" = COALESCE($9, "webhookUrl"),
             "webhookType" = COALESCE($10, "webhookType"),
+            "webhookSecret" = COALESCE($11, "webhookSecret"),
             "updatedAt" = NOW()
-         WHERE id = $11 RETURNING *`,
+         WHERE id = $12 RETURNING *`,
         [
             data.name, data.url, data.method,
             data.headers ? JSON.stringify(data.headers) : null,
             data.body, data.frequency, data.isActive, data.notifyEmail,
-            data.webhookUrl, data.webhookType,
+            data.webhookUrl, data.webhookType, data.webhookSecret,
             monitorId
         ]
     );
@@ -281,4 +307,56 @@ export async function triggerManualCheck(monitorId: string) {
     await runMonitorCheck(monitorId);
     const history = await getMonitorHistory(monitorId, 1);
     return history[0];
+}
+
+export async function getMonitorHeatmap(monitorId: string) {
+    const result = await query(
+        `SELECT 
+            date_trunc('hour', "checkedAt") as "hour", 
+            COUNT(*) as total, 
+            SUM(CASE WHEN "isSuccess" THEN 1 ELSE 0 END) as success, 
+            ROUND(AVG("responseTime")) as "avgResponseTime" 
+         FROM monitor_results 
+         WHERE "monitorId" = $1 AND "checkedAt" >= NOW() - INTERVAL '24 HOURS' 
+         GROUP BY "hour" 
+         ORDER BY "hour" ASC`,
+        [monitorId]
+    );
+    return result.rows;
+}
+
+export async function getPublicStatus(slug: string) {
+    // Fetch public documentation first
+    const { rows: docs } = await query('SELECT id, title, "isPublic" FROM documentation WHERE slug = $1', [slug]);
+    if (!docs[0] || !docs[0].isPublic) {
+        return null;
+    }
+
+    const doc = docs[0];
+    
+    // Fetch active monitors for this documentation (no sensitive info like webhookUrl)
+    const { rows: monitors } = await query(
+        `SELECT m.id, m.name, m.url, m.method, m.frequency,
+            COUNT(r.id) AS "totalChecks",
+            SUM(CASE WHEN r."isSuccess" THEN 1 ELSE 0 END) AS "successCount",
+            ROUND(AVG(r."responseTime")) AS "avgResponseTime",
+            MAX(r."checkedAt") AS "lastCheckedAt",
+            (SELECT r2."isSuccess" FROM monitor_results r2 WHERE r2."monitorId" = m.id ORDER BY r2."checkedAt" DESC LIMIT 1) AS "lastStatus"
+         FROM monitors m
+         LEFT JOIN monitor_results r ON r."monitorId" = m.id
+         WHERE m."documentationId" = $1 AND m."isActive" = true
+         GROUP BY m.id
+         ORDER BY m."createdAt" ASC`,
+        [doc.id]
+    );
+
+    // Fetch heatmap data for each monitor
+    for (const monitor of monitors) {
+        monitor.heatmap = await getMonitorHeatmap(monitor.id);
+    }
+
+    return {
+        documentation: doc,
+        monitors
+    };
 }
