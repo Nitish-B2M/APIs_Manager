@@ -1,5 +1,5 @@
 const { Pool } = require('pg');
-const pool = new Pool({ connectionString: 'postgresql://postgres:root@localhost:5432/postman_docs' });
+const pool = new Pool({ connectionString: 'postgresql://postgres:root@localhost:5432/devmanus_docs' });
 
 async function check() {
     try {
