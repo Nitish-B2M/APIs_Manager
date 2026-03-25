@@ -4,13 +4,37 @@ import { adminMiddleware } from '../middleware/adminAuth';
 import { query } from '../utils/db';
 import { z } from 'zod';
 import { ApiResponse } from '../utils/response';
-import { logErrorReport } from '../utils/logger';
+import { logErrorReport, addLogListener, removeLogListener, LogEntry } from '../utils/logger';
 import { ERROR_CODES } from '../constants/errorCodes';
 
 const SERVICE_NAME = 'AdminService';
 const router = Router();
 
-// Apply auth and admin middleware to all routes
+// Presence / Real-time Logs SSE
+router.get('/logs/stream', authMiddleware, adminMiddleware, (req: AuthRequest, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const listener = (log: LogEntry) => {
+        res.write(`data: ${JSON.stringify(log)}\n\n`);
+    };
+
+    addLogListener(listener);
+
+    const heartbeat = setInterval(() => {
+        res.write(': heartbeat\n\n');
+    }, 30000);
+
+    req.on('close', () => {
+        clearInterval(heartbeat);
+        removeLogListener(listener);
+        res.end();
+    });
+});
+
+// Apply auth and admin middleware to all other routes
 router.use(authMiddleware);
 router.use(adminMiddleware);
 

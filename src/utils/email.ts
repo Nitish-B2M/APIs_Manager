@@ -27,7 +27,7 @@ export async function sendEmail(to: string, subject: string, html: string) {
         if (!transporter) throw new Error('SMTP transporter not initialized');
 
         const info = await transporter.sendMail({
-            from: process.env.SMTP_FROM || '"Postman Docs" <noreply@example.com>',
+            from: process.env.SMTP_FROM || '"DevManus Docs" <noreply@example.com>',
             to,
             subject,
             html,

@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import './utils/env';
 import { authLimiter, generalLimiter } from './middleware/rateLimit';
 import { errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/auth';
@@ -16,6 +17,7 @@ import collaborationRoutes from './routes/collaboration';
 import adminRoutes from './routes/admin';
 import schedulerRoutes from './routes/scheduler';
 import contactRoutes from './routes/contact';
+import webhookRoutes from './routes/webhook';
 import { initMonitors } from './services/monitorService';
 
 const app = express();
@@ -57,6 +59,12 @@ app.get('/api/health', (_req, res) => {
     });
 });
 
+// Request logging middleware for debugging
+app.use((req, _res, next) => {
+    console.log(`[Server] ${req.method} ${req.url}`);
+    next();
+});
+
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/documentation', generalLimiter, documentationRoutes);
 app.use('/api/documentation', generalLimiter, foldersRoutes);
@@ -71,11 +79,20 @@ app.use('/api/collaboration', generalLimiter, collaborationRoutes);
 app.use('/api/admin', generalLimiter, adminRoutes);
 app.use('/api/scheduler', generalLimiter, schedulerRoutes);
 app.use('/api/contact', generalLimiter, contactRoutes);
+app.use('/api/webhooks', generalLimiter, webhookRoutes);
 app.use('/m', mockRoutes);
 
 app.get('/', (req, res) => {
     console.log('Hello World', req.headers);
-    res.send('Postman Documentation Generator API');
+    res.send('DevManus Documentation Generator API');
+});
+
+// 404 handler
+app.use((_req, res) => {
+    res.status(404).json({
+        status: false,
+        message: 'Route not found'
+    });
 });
 
 // Centralized error handler (must be last middleware)

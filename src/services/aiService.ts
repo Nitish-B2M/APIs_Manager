@@ -137,3 +137,27 @@ export const explainError = async (
 
     return await generateDescription(prompt);
 };
+
+export const generateCollectionReadme = async (
+    title: string,
+    endpoints: any[]
+): Promise<string> => {
+    const endpointsSummary = endpoints.map(ep => `- ${ep.method} ${ep.url}: ${ep.name}`).join('\n');
+    
+    const prompt = `
+    You are a technical writer. Generate a professional README.md for an API collection titled "${title}".
+    
+    ENDPOINTS LIST:
+    ${endpointsSummary}
+    
+    REQUIREMENTS:
+    - Include a brief introduction.
+    - Group endpoints logically (e.g., Auth, Users, etc.).
+    - Use clean markdown formatting.
+    - Do not include installation instructions or generic boilerplate.
+    - Focus on describing the API's purpose and capabilities.
+    - Format the output as raw markdown.
+    `;
+
+    return await generateDescription(prompt);
+};

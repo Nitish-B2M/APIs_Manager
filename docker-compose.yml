@@ -1,5 +1,5 @@
 # ============================================
-# Postman Documentation Generator - Server
+# DevManus Documentation Generator - Server
 # Docker Compose Configuration
 # ============================================
 
@@ -9,12 +9,12 @@ services:
   # ============================================
   postgres:
     image: postgres:15-alpine
-    container_name: postman-docs-db
+    container_name: devmanus-docs-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postman_docs
+      POSTGRES_DB: devmanus_docs
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -34,12 +34,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: postman-docs-server
+    container_name: devmanus-docs-server
     restart: unless-stopped
     environment:
       NODE_ENV: production
       PORT: 4001
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postman_docs
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/devmanus_docs
       JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-production}
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:3000}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
