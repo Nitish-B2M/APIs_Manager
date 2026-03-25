@@ -12,6 +12,150 @@ import { sendEmail, parseTemplate } from '../utils/email';
 const SERVICE_NAME = 'CollaborationService';
 const router = Router();
 
+// Presence tracking
+const presenceConnections = new Map<string, Set<Response>>();
+const presenceUsers = new Map<string, Map<string, any>>();
+
+function broadcastPresence(documentationId: string) {
+    const connections = presenceConnections.get(documentationId);
+    const users = Array.from(presenceUsers.get(documentationId)?.values() || []);
+
+    if (connections) {
+        const data = `data: ${JSON.stringify(users)}\n\n`;
+        connections.forEach(conn => {
+            try {
+                conn.write(data);
+            } catch (err) {
+                console.error('[Presence] Failed to write to connection:', err);
+            }
+        });
+    }
+}
+
+// Presence SSE endpoint
+router.get('/presence/:documentationId', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const documentationId = req.params.documentationId as string;
+        const userId = req.user!.userId;
+
+        // Check access
+        const access = await checkAccess(documentationId, userId);
+        if (!access.hasAccess) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
+            return;
+        }
+
+        // PERFORMANCE GUARD: Check if document is shared or public
+        const { rows: docStatus } = await query(
+            `SELECT d."isPublic", 
+                    (SELECT COUNT(*) FROM documentation_collaborators WHERE "documentationId" = d.id) as collaborators_count
+             FROM documentation d 
+             WHERE d.id = $1`,
+            [documentationId]
+        );
+
+        const isShared = docStatus[0]?.isPublic || parseInt(docStatus[0]?.collaborators_count || '0') > 0;
+        
+        if (!isShared) {
+            // If not shared, we don't need a presence connection. 
+            // Just close it immediately without error to save resources.
+            res.end();
+            return;
+        }
+
+        // Set headers for SSE
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+
+        // Fetch user details
+        const { rows: userRows } = await query('SELECT id, name, email, avatar_url FROM users WHERE id = $1', [userId]);
+        if (userRows.length === 0) {
+            res.end();
+            return;
+        }
+
+        const user = {
+            id: userRows[0].id,
+            name: userRows[0].name || userRows[0].email.split('@')[0],
+            avatarUrl: userRows[0].avatar_url,
+            email: userRows[0].email
+        };
+
+        // Add to presence
+        if (!presenceConnections.has(documentationId)) {
+            presenceConnections.set(documentationId, new Set());
+            presenceUsers.set(documentationId, new Map());
+        }
+
+        presenceConnections.get(documentationId)!.add(res);
+        
+        // Use a counter or specific connection ID if the same user opens multiple tabs
+        const userConnections = presenceUsers.get(documentationId)!;
+        const currentCount = (userConnections.get(userId)?.count || 0) + 1;
+        userConnections.set(userId, { ...user, count: currentCount });
+
+        // Initial broadcast
+        broadcastPresence(documentationId);
+
+        // Keep-alive heartbeat
+        const heartbeat = setInterval(() => {
+            res.write(': heartbeat\n\n');
+        }, 30000);
+
+        // Remove on disconnect
+        req.on('close', () => {
+            clearInterval(heartbeat);
+            presenceConnections.get(documentationId)?.delete(res);
+            
+            const userState = presenceUsers.get(documentationId)?.get(userId);
+            if (userState) {
+                if (userState.count <= 1) {
+                    presenceUsers.get(documentationId)?.delete(userId);
+                } else {
+                    presenceUsers.get(documentationId)?.set(userId, { ...userState, count: userState.count - 1 });
+                }
+            }
+            
+            broadcastPresence(documentationId);
+            
+            // Clean up empty rooms
+            if (presenceConnections.get(documentationId)?.size === 0) {
+                presenceConnections.delete(documentationId);
+                presenceUsers.delete(documentationId);
+            }
+        });
+    } catch (error: any) {
+        logErrorReport('presence', SERVICE_NAME, error, ERROR_CODES.COLLAB_FETCH_FAILED);
+        res.end();
+    }
+});
+
+// Presence update endpoint
+router.post('/presence/:documentationId/update', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const documentationId = req.params.documentationId as string;
+        const userId = req.user!.userId;
+        const { metadata } = req.body; // { field: 'url', requestId: '...' }
+
+        if (!presenceUsers.has(documentationId)) {
+            res.status(404).json(ApiResponse.error({ message: 'No active session' }));
+            return;
+        }
+
+        const userState = presenceUsers.get(documentationId)!.get(userId);
+        if (userState) {
+            presenceUsers.get(documentationId)!.set(userId, { ...userState, metadata });
+            broadcastPresence(documentationId);
+        }
+
+        res.json(ApiResponse.success({ message: 'Presence updated' }));
+    } catch (error: any) {
+        res.status(500).json(ApiResponse.error({ message: error.message }));
+    }
+});
+
 // List invitations for the current user
 router.get('/my-invitations', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
