@@ -10,7 +10,7 @@ const router = Router();
 // Create monitor
 router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
-        const { documentationId, requestId, name, url, method, headers, body, frequency, notifyEmail } = req.body;
+        const { documentationId, requestId, name, url, method, headers, body, frequency, notifyEmail, webhookUrl, webhookType, webhookSecret } = req.body;
         if (!documentationId || !name || !url) {
             res.status(400).json(ApiResponse.error({ message: 'documentationId, name, and url are required' }));
             return;
@@ -22,7 +22,7 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
             return;
         }
 
-        const monitor = await monitorService.createMonitor({ documentationId, requestId, name, url, method, headers, body, frequency, notifyEmail });
+        const monitor = await monitorService.createMonitor({ documentationId, requestId, name, url, method, headers, body, frequency, notifyEmail, webhookUrl, webhookType, webhookSecret });
         res.json(ApiResponse.success({ message: 'Monitor created', data: monitor }));
         return;
     } catch (error: any) {
@@ -149,6 +149,51 @@ router.delete('/:monitorId', authMiddleware, async (req: AuthRequest, res: Respo
 
         await monitorService.deleteMonitor(monitorId);
         res.json(ApiResponse.success({ message: 'Monitor deleted' }));
+        return;
+    } catch (error: any) {
+        res.status(500).json(ApiResponse.error({ message: error.message }));
+        return;
+    }
+});
+
+// Get public status page data
+router.get('/public/:slug', async (req: import('express').Request, res: Response) => {
+    try {
+        const slug = req.params.slug as string;
+        const statusData = await monitorService.getPublicStatus(slug);
+        
+        if (!statusData) {
+            res.status(404).json(ApiResponse.error({ message: 'Status page not found or private' }));
+            return;
+        }
+
+        res.json(ApiResponse.success({ message: 'Status fetched', data: statusData }));
+        return;
+    } catch (error: any) {
+        res.status(500).json(ApiResponse.error({ message: error.message }));
+        return;
+    }
+});
+
+// Get heatmap data for a monitor
+router.get('/:monitorId/heatmap', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const monitorId = req.params.monitorId as string;
+
+        const { rows: monitors } = await query('SELECT "documentationId" FROM monitors WHERE id = $1', [monitorId]);
+        if (!monitors[0]) {
+            res.status(404).json(ApiResponse.error({ message: 'Monitor not found' }));
+            return;
+        }
+
+        const access = await checkAccess(monitors[0].documentationId, req.user!.userId);
+        if (!access.hasAccess) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Access to documentation required' }));
+            return;
+        }
+
+        const heatmap = await monitorService.getMonitorHeatmap(monitorId);
+        res.json(ApiResponse.success({ message: 'Heatmap fetched', data: heatmap }));
         return;
     } catch (error: any) {
         res.status(500).json(ApiResponse.error({ message: error.message }));

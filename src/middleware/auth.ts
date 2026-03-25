@@ -6,7 +6,11 @@ export interface AuthRequest extends Request {
 }
 
 export const authMiddleware = (req: AuthRequest, res: Response, next: NextFunction) => {
-    const token = req.headers.authorization?.split(' ')[1];
+    let token = req.headers.authorization?.split(' ')[1];
+
+    if (!token && req.query.token) {
+        token = req.query.token as string;
+    }
 
     if (!token) {
         res.status(401).json({ message: 'Unauthorized' });
@@ -24,7 +28,11 @@ export const authMiddleware = (req: AuthRequest, res: Response, next: NextFuncti
 };
 
 export const optionalAuthMiddleware = (req: AuthRequest, _res: Response, next: NextFunction) => {
-    const token = req.headers.authorization?.split(' ')[1];
+    let token = req.headers.authorization?.split(' ')[1];
+
+    if (!token && req.query.token) {
+        token = req.query.token as string;
+    }
 
     if (token) {
         const decoded = verifyJwt(token);

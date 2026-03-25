@@ -6,6 +6,11 @@ import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
 import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { ERROR_CODES } from '../constants/errorCodes';
+import { webhookService } from '../services/webhookService';
+import { auditService } from '../services/auditService';
+import { generateOpenApiSpec } from '../utils/openApiGenerator';
+import { generatePostmanCollection } from '../utils/postmanGenerator';
+
 
 const SERVICE_NAME = 'DocumentationService';
 const router = Router();
@@ -36,7 +41,11 @@ router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
                             )
                         ) FILTER (WHERE r.id IS NOT NULL),
                         '[]'
-                    ) as requests
+                    ) as requests,
+                    COALESCE(
+                        (SELECT json_agg(f.*) FROM folders f WHERE f."documentationId" = d.id),
+                        '[]'
+                    ) as folders
              FROM documentation d
              LEFT JOIN requests r ON d.id = r."documentationId"
              WHERE d."userId" = $1 OR d.id IN (SELECT "documentationId" FROM documentation_collaborators WHERE "userId" = $1)
@@ -45,7 +54,6 @@ router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
             [req.user!.userId]
         );
 
-        // Fetch collaborators for each documentation
         const docsWithCollaborators = await Promise.all(rows.map(async (doc: any) => {
             const { rows: collaborators } = await query(
                 `SELECT c.id, c.role::text as role, u.name, u.email, u.avatar_url as "avatarUrl"
@@ -81,6 +89,7 @@ router.post('/create', authMiddleware, async (req: AuthRequest, res: Response) =
         });
 
         const input = schema.parse(req.body);
+
         const { extractEndpoints } = await import('../services/markdownGenerator');
 
         let parsedContent: any;
@@ -277,7 +286,6 @@ router.post('/request/bulk-delete', authMiddleware, async (req: AuthRequest, res
             return;
         }
 
-        // Get the documentationId of the first request to verify access
         const { rows: reqs } = await query('SELECT "documentationId" FROM requests WHERE id = $1', [requestIds[0]]);
         if (!reqs[0]) {
             res.status(404).json(ApiResponse.error({ message: 'Requests not found' }));
@@ -336,7 +344,6 @@ router.patch('/request/bulk-move', authMiddleware, async (req: AuthRequest, res:
 
         await query('BEGIN');
         try {
-            // Explicitly cast to uuid array for safer comparison
             await query('UPDATE requests SET "folderId" = $1, "updatedAt" = CURRENT_TIMESTAMP WHERE id = ANY($2::uuid[]) AND "documentationId" = $3', [folderId, requestIds, docId]);
             await query('UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1', [docId]);
             await query('COMMIT');
@@ -347,8 +354,7 @@ router.patch('/request/bulk-move', authMiddleware, async (req: AuthRequest, res:
         }
     } catch (error: any) {
         logErrorReport('bulkMoveRequests', SERVICE_NAME, error, 'DOC_BULK_MOVE_FAILED');
-        const errorMsg = error.message || 'Failed to move requests';
-        res.status(500).json(ApiResponse.error({ message: errorMsg }));
+        res.status(500).json(ApiResponse.error({ message: 'Failed to move requests' }));
     }
 });
 
@@ -379,7 +385,7 @@ router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res
         fields.forEach(field => {
             if (body[field] !== undefined) {
                 updates.push(`"${field}" = $${count}`);
-                values.push(typeof body[field] === 'object' ? JSON.stringify(body[field]) : body[field]);
+                values.push((typeof body[field] === 'object' && body[field] !== null) ? JSON.stringify(body[field]) : body[field]);
                 count++;
             }
         });
@@ -395,11 +401,17 @@ router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res
             values
         );
 
-        // update documentation last updated
-        await query(
-            'UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1',
-            [docId]
-        );
+        await query('UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1', [docId]);
+
+        // Audit Log
+        auditService.log({
+            documentationId: docId,
+            userId: req.user!.userId,
+            action: 'UPDATE',
+            entityType: 'REQUEST',
+            entityName: updatedReq[0].name,
+            changes: body
+        });
 
         res.json(ApiResponse.success({
             message: 'Request updated successfully',
@@ -415,8 +427,7 @@ router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res
 router.delete('/request/:requestId', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         const { requestId } = req.params;
-
-        const { rows: reqs } = await query('SELECT "documentationId" FROM requests WHERE id = $1', [requestId]);
+        const { rows: reqs } = await query('SELECT "documentationId", name FROM requests WHERE id = $1', [requestId]);
         if (!reqs[0]) {
             res.status(404).json(ApiResponse.error({ message: 'Request not found' }));
             return;
@@ -425,22 +436,23 @@ router.delete('/request/:requestId', authMiddleware, async (req: AuthRequest, re
         const docId = reqs[0].documentationId;
         const access = await checkAccess(docId, req.user!.userId);
         if (!access.hasAccess || !canEdit(access.role)) {
-            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
             return;
         }
 
-        const { rows } = await query('DELETE FROM requests WHERE id = $1 RETURNING *', [requestId]);
+        await query('DELETE FROM requests WHERE id = $1', [requestId]);
+        await query('UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1', [docId]);
 
-        // update documentation last updated
-        await query(
-            'UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1',
-            [docId]
-        );
+        // Audit Log
+        auditService.log({
+            documentationId: docId,
+            userId: req.user!.userId,
+            action: 'DELETE',
+            entityType: 'REQUEST',
+            entityName: reqs[0].name
+        });
 
-        res.json(ApiResponse.success({
-            message: 'Request deleted successfully',
-            data: rows[0],
-        }));
+        res.json(ApiResponse.success({ message: 'Request deleted successfully' }));
     } catch (error: any) {
         logErrorReport('deleteRequest', SERVICE_NAME, error, ERROR_CODES.DOC_REQUEST_DELETE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to delete request' }));
@@ -459,15 +471,13 @@ router.patch('/:id/requests/reorder', authMiddleware, async (req: AuthRequest, r
         });
 
         const input = schema.parse(req.body);
-
         const access = await checkAccess(id, req.user!.userId);
         if (!access.hasAccess || !canEdit(access.role)) {
-            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required to reorder requests' }));
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
             return;
         }
 
         await query('BEGIN');
-
         try {
             for (const reqOrder of input.requests) {
                 await query(
@@ -475,21 +485,12 @@ router.patch('/:id/requests/reorder', authMiddleware, async (req: AuthRequest, r
                     [reqOrder.order, reqOrder.id, id]
                 );
             }
-
-            // update documentation last updated
-            await query(
-                'UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1',
-                [id]
-            );
-
+            await query('UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1', [id]);
             await query('COMMIT');
-
-            res.json(ApiResponse.success({
-                message: 'Requests reordered successfully',
-            }));
-        } catch (error) {
+            res.json(ApiResponse.success({ message: 'Reordered successfully' }));
+        } catch (err) {
             await query('ROLLBACK');
-            throw error;
+            throw err;
         }
     } catch (error: any) {
         logErrorReport('reorderRequests', SERVICE_NAME, error, ERROR_CODES.DOC_REORDER_FAILED);
@@ -505,19 +506,8 @@ router.post('/:id/request', authMiddleware, async (req: AuthRequest, res: Respon
 
         const access = await checkAccess(id, req.user!.userId);
         if (!access.hasAccess || !canEdit(access.role)) {
-            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required to create requests' }));
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
             return;
-        }
-
-        if (folderId) {
-            const { rows: folders } = await query(
-                'SELECT id FROM folders WHERE id = $1 AND "documentationId" = $2',
-                [folderId, id]
-            );
-            if (!folders[0]) {
-                res.status(400).json(ApiResponse.error({ message: 'Folder not found in this documentation' }));
-                return;
-            }
         }
 
         const { rows: countRes } = await query('SELECT COUNT(*) FROM requests WHERE "documentationId" = $1', [id]);
@@ -526,26 +516,33 @@ router.post('/:id/request', authMiddleware, async (req: AuthRequest, res: Respon
         const { rows } = await query(
             `INSERT INTO requests ("documentationId", name, method, protocol, url, "order", body, headers, params, "folderId", assertions) 
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-            [id, name || 'New Request', method || 'GET', req.body.protocol || 'REST', url || '', order, '{}', '[]', '[]', folderId || null, '[]']
+            [id, name || 'New Request', method || 'GET', 'REST', url || '', order, JSON.stringify({ mode: 'raw', raw: '' }), '[]', '[]', folderId || null, '[]']
         );
 
-        // update documentation last updated
-        await query(
-            'UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1',
-            [id]
-        );
+        await query('UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1', [id]);
 
-        res.json(ApiResponse.success({
-            message: 'Request created',
-            data: rows[0],
-        }));
+        webhookService.dispatch({
+            event: 'request.created',
+            documentationId: id,
+            payload: { requestId: rows[0].id, name: rows[0].name, method: rows[0].method, url: rows[0].url }
+        });
+
+        auditService.log({
+            documentationId: id,
+            userId: req.user!.userId,
+            action: 'CREATE',
+            entityType: 'REQUEST',
+            entityName: rows[0].name
+        });
+
+        res.json(ApiResponse.success({ message: 'Request created', data: rows[0] }));
     } catch (error: any) {
         logErrorReport('createRequest', SERVICE_NAME, error, ERROR_CODES.DOC_REQUEST_CREATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to create request' }));
     }
 });
 
-// Get by ID (includes requests join)
+// Get by ID
 router.get('/:id', optionalAuthMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
@@ -553,152 +550,71 @@ router.get('/:id', optionalAuthMiddleware, async (req: AuthRequest, res: Respons
         const doc = rows[0];
 
         if (!doc) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+            res.status(404).json(ApiResponse.error({ message: 'Not found' }));
             return;
         }
 
         const access = await checkAccess(id, req.user?.userId || '');
-
         if (!access.hasAccess) {
             if (!req.user) {
-                res.status(401).json(ApiResponse.error({ message: 'This collection is private. Please login to view it.' }));
+                res.status(401).json(ApiResponse.error({ message: 'Login required' }));
                 return;
             }
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+            res.status(404).json(ApiResponse.error({ message: 'Not found' }));
             return;
         }
-
-        // Include user's role in the response so UI knows what changes to allow/block
-        doc.role = access.role;
 
         const { rows: requests } = await query('SELECT * FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
+        const { rows: folders } = await query('SELECT * FROM folders WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
+        
         doc.requests = requests;
-
-        const { rows: folders } = await query(
-            'SELECT * FROM folders WHERE "documentationId" = $1 ORDER BY "parentId" NULLS FIRST, "order" ASC',
-            [id]
-        );
         doc.folders = folders;
+        doc.role = access.role;
 
-        res.json(ApiResponse.success({
-            message: 'Collection fetched successfully',
-            data: doc,
-        }));
+        res.json(ApiResponse.success({ message: 'Documentation fetched', data: doc }));
     } catch (error: any) {
-        logErrorReport('getDocumentation', SERVICE_NAME, error, ERROR_CODES.DOC_FETCH_FAILED);
-        res.status(500).json(ApiResponse.error({ message: 'Failed to fetch collection' }));
-    }
-});
-
-// Get code snippets for a request
-router.get('/request/:requestId/snippets', authMiddleware, async (req: AuthRequest, res: Response) => {
-    try {
-        const { requestId } = req.params;
-        const { generateAllSnippets } = await import('../utils/codeGenerator');
-
-        const { rows: reqs } = await query('SELECT * FROM requests WHERE id = $1', [requestId]);
-        if (!reqs[0]) {
-            res.status(404).json(ApiResponse.error({ message: 'Request not found' }));
-            return;
-        }
-
-        const request = reqs[0];
-        const snippets = generateAllSnippets({
-            method: request.method,
-            url: request.url,
-            headers: Array.isArray(request.headers) ? request.headers : [],
-            body: typeof request.body === 'object' ? { mode: 'raw', raw: JSON.stringify(request.body) } : undefined,
-        });
-
-        res.json(ApiResponse.success({
-            message: 'Snippets generated',
-            data: snippets,
-        }));
-    } catch (error: any) {
-        logErrorReport('getSnippets', SERVICE_NAME, error, ERROR_CODES.DOC_SNIPPETS_FAILED);
-        res.status(500).json(ApiResponse.error({ message: 'Failed to generate snippets' }));
-    }
-});
-
-// Get public documentation by slug
-router.get('/public/:slug', async (req: AuthRequest, res: Response) => {
-    try {
-        const { slug } = req.params;
-
-        const { rows: docs } = await query(
-            `SELECT * FROM documentation WHERE slug = $1 AND "isPublic" = true`,
-            [slug]
-        );
-        const doc = docs[0];
-
-        if (!doc) {
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
-            return;
-        }
-
-        const { rows: requests } = await query(
-            `SELECT id, name, method, protocol, url, description, body, headers, params, "lastResponse", "order", "folderId", assertions, "responseSchema" FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC`,
-            [doc.id]
-        );
-        doc.requests = requests;
-
-        const { rows: folders } = await query(
-            `SELECT * FROM folders WHERE "documentationId" = $1 ORDER BY "parentId" NULLS FIRST, "order" ASC`,
-            [doc.id]
-        );
-        doc.folders = folders;
-
-        delete doc.userId;
-
-        res.json(ApiResponse.success({
-            message: 'Public documentation fetched',
-            data: doc,
-        }));
-    } catch (error: any) {
-        logErrorReport('getPublicDocumentation', SERVICE_NAME, error, ERROR_CODES.DOC_PUBLIC_FETCH_FAILED);
+        logErrorReport('getById', SERVICE_NAME, error, ERROR_CODES.DOC_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch documentation' }));
     }
 });
 
-// Update documentation slug
+// Update slug
 router.patch('/:id/slug', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
-        const schema = z.object({
-            slug: z.string().min(3).max(100).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase letters, numbers, and hyphens only'),
-        });
-
-        const input = schema.parse(req.body);
+        const { slug } = req.body;
 
         const access = await checkAccess(id, req.user!.userId);
         if (!access.hasAccess || !canAdmin(access.role)) {
-            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Admin access required to change the public slug' }));
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
             return;
         }
 
-        const { rows: existing } = await query('SELECT id FROM documentation WHERE slug = $1 AND id != $2', [input.slug, id]);
-        if (existing.length > 0) {
-            res.status(409).json(ApiResponse.error({ message: 'This slug is already taken' }));
-            return;
-        }
-
-        const { rows } = await query(
-            `UPDATE documentation SET slug = $1, "updatedAt" = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`,
-            [input.slug, id]
-        );
-
-        res.json(ApiResponse.success({
-            message: 'Slug updated successfully',
-            data: rows[0],
-        }));
+        await query('UPDATE documentation SET slug = $1 WHERE id = $2', [slug, id]);
+        res.json(ApiResponse.success({ message: 'Slug updated' }));
     } catch (error: any) {
-        logErrorReport('updateSlug', SERVICE_NAME, error, ERROR_CODES.DOC_SLUG_UPDATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to update slug' }));
     }
 });
 
-// Export documentation as OpenAPI format
-router.get('/:id/export/openapi', optionalAuthMiddleware, async (req: AuthRequest, res: Response) => {
+// Get audit logs
+router.get('/:id/audit-logs', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const id = req.params.id as string;
+        const access = await checkAccess(id, req.user!.userId);
+        if (!access.hasAccess) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
+            return;
+        }
+
+        const logs = await auditService.getLogs(id);
+        res.json(ApiResponse.success({ message: 'Logs fetched', data: logs }));
+    } catch (error: any) {
+        res.status(500).json(ApiResponse.error({ message: 'Failed to fetch logs' }));
+    }
+});
+// Export to Postman Collection v2.1.0
+router.get('/:id/export/postman', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const { rows } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
@@ -709,27 +625,81 @@ router.get('/:id/export/openapi', optionalAuthMiddleware, async (req: AuthReques
             return;
         }
 
-        const access = await checkAccess(id, req.user?.userId || '');
-
+        const access = await checkAccess(id, req.user!.userId);
         if (!access.hasAccess) {
-            if (!req.user) {
-                res.status(401).json(ApiResponse.error({ message: 'This collection is private. Please login to export it.' }));
-                return;
-            }
-            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
             return;
         }
 
         const { rows: requests } = await query('SELECT * FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
         const { rows: folders } = await query('SELECT * FROM folders WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
 
-        const { generateOpenApiSpec } = await import('../utils/openApiGenerator');
-        const spec = generateOpenApiSpec(doc, requests, folders);
+        const collection = generatePostmanCollection(doc, requests, folders);
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="${doc.title.replace(/\s+/g, '_')}_collection.json"`);
+        res.json(collection);
+    } catch (error: any) {
+        logErrorReport('exportPostman', SERVICE_NAME, error, 'EXPORT_FAILED');
+        res.status(500).json(ApiResponse.error({ message: 'Failed to export to Postman' }));
+    }
+});
 
+// Export to OpenAPI 3.1.0
+router.get('/:id/export/openapi', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        const id = req.params.id as string;
+        const { rows } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
+        const doc = rows[0];
+
+        if (!doc) {
+            res.status(404).json(ApiResponse.error({ message: 'Documentation not found' }));
+            return;
+        }
+
+        const access = await checkAccess(id, req.user!.userId);
+        if (!access.hasAccess) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
+            return;
+        }
+
+        const { rows: requests } = await query('SELECT * FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
+        const { rows: folders } = await query('SELECT * FROM folders WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
+
+        const spec = generateOpenApiSpec(doc, requests, folders);
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="${doc.title.replace(/\s+/g, '_')}_openapi.json"`);
         res.json(spec);
     } catch (error: any) {
-        logErrorReport('exportOpenApi', SERVICE_NAME, error, 'DOC_EXPORT_OPENAPI_FAILED');
-        res.status(500).json(ApiResponse.error({ message: 'Failed to generate OpenAPI spec' }));
+        logErrorReport('exportOpenApi', SERVICE_NAME, error, 'EXPORT_FAILED');
+        res.status(500).json(ApiResponse.error({ message: 'Failed to export to OpenAPI' }));
+    }
+});
+
+// Get public documentation by slug
+router.get('/public/:slug', async (req: AuthRequest, res: Response) => {
+    try {
+        const { slug } = req.params;
+        const { rows } = await query(
+            'SELECT * FROM documentation WHERE slug = $1 AND "isPublic" = true',
+            [slug]
+        );
+        const doc = rows[0];
+
+        if (!doc) {
+            res.status(404).json(ApiResponse.error({ message: 'Public documentation not found' }));
+            return;
+        }
+
+        const { rows: requests } = await query('SELECT * FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC', [doc.id]);
+        const { rows: folders } = await query('SELECT * FROM folders WHERE "documentationId" = $1 ORDER BY "order" ASC', [doc.id]);
+        
+        doc.requests = requests;
+        doc.folders = folders;
+
+        res.json(ApiResponse.success({ message: 'Public documentation fetched', data: doc }));
+    } catch (error: any) {
+        logErrorReport('getPublicBySlug', SERVICE_NAME, error, ERROR_CODES.DOC_FETCH_FAILED);
+        res.status(500).json(ApiResponse.error({ message: 'Failed to fetch public documentation' }));
     }
 });
 

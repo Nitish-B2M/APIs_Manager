@@ -1,5 +1,5 @@
 # ============================================
-# Postman Documentation Generator - Server
+# DevManus Documentation Generator - Server
 # Express.js Backend Application
 # ============================================
 
