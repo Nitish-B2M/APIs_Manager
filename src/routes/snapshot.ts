@@ -4,11 +4,12 @@ import { snapshotService } from '../services/snapshotService';
 import { ApiResponse } from '../utils/response';
 import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { query } from '../utils/db';
+import { catchAsync } from '../utils/catchAsync';
 
 const router = Router();
 
 // Create snapshot
-router.post('/create', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/create', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { documentationId, name } = req.body;
         if (!documentationId || !name) {
@@ -32,10 +33,10 @@ router.post('/create', authMiddleware, async (req: AuthRequest, res: Response) =
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // List snapshots for a documentation
-router.get('/list/:documentationId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/list/:documentationId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
 
@@ -55,10 +56,10 @@ router.get('/list/:documentationId', authMiddleware, async (req: AuthRequest, re
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // Get individual snapshot
-router.get('/:snapshotId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:snapshotId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const snapshotId = req.params.snapshotId as string;
         const { rows: snapshots } = await query('SELECT * FROM snapshots WHERE id = $1', [snapshotId]);
@@ -83,10 +84,10 @@ router.get('/:snapshotId', authMiddleware, async (req: AuthRequest, res: Respons
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // Restore snapshot
-router.post('/restore/:snapshotId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/restore/:snapshotId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const snapshotId = req.params.snapshotId as string;
 
@@ -109,10 +110,10 @@ router.post('/restore/:snapshotId', authMiddleware, async (req: AuthRequest, res
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // Delete snapshot
-router.delete('/:snapshotId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/:snapshotId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const snapshotId = req.params.snapshotId as string;
 
@@ -135,6 +136,6 @@ router.delete('/:snapshotId', authMiddleware, async (req: AuthRequest, res: Resp
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 export default router;

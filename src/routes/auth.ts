@@ -1,27 +1,62 @@
 import { Router, Response, Request } from 'express';
 import { query } from '../utils/db';
-import { signJwt } from '../utils/jwt';
+import {
+    signAccessToken, createRefreshToken, verifyRefreshToken, revokeRefreshToken,
+    revokeAllUserTokens, validatePassword, recordFailedLogin, resetLoginAttempts, isAccountLocked
+} from '../utils/jwt';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { z } from 'zod';
 import { AuthRequest, authMiddleware } from '../middleware/auth';
 import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
 import { ERROR_CODES } from '../constants/errorCodes';
 import { sendEmail } from '../utils/email';
-import crypto from 'crypto';
 import { resetLimiter } from '../middleware/rateLimit';
+import { catchAsync } from '../utils/catchAsync';
 
 const SERVICE_NAME = 'AuthService';
 const router = Router();
 
-router.post('/register', async (req: Request, res: Response) => {
+// ─── Shared Zod schemas ─────────────────────────────────────────────
+
+const passwordSchema = z.string().min(8, 'Password must be at least 8 characters');
+
+const registerSchema = z.object({
+    email: z.string().email('Invalid email address'),
+    password: passwordSchema,
+    inviteToken: z.string().optional(),
+});
+
+const loginSchema = z.object({
+    email: z.string().email(),
+    password: z.string().min(1, 'Password is required'),
+});
+
+// ─── Helper: set refresh token cookie ───────────────────────────────
+
+function setRefreshCookie(res: Response, token: string) {
+    res.cookie('refreshToken', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        path: '/api/auth',
+    });
+}
+
+// ─── POST /register ─────────────────────────────────────────────────
+
+router.post('/register', catchAsync(async (req: Request, res: Response) => {
     try {
-        const schema = z.object({
-            email: z.string().email(),
-            password: z.string().min(6),
-            inviteToken: z.string().optional()
-        });
-        const { email, password, inviteToken } = schema.parse(req.body);
+        const { email, password, inviteToken } = registerSchema.parse(req.body);
+
+        // Validate password strength
+        const pwCheck = validatePassword(password);
+        if (!pwCheck.valid) {
+            res.status(400).json(ApiResponse.error({ message: `Weak password: ${pwCheck.errors.join(', ')}` }));
+            return;
+        }
 
         const { rows: existingUsers } = await query('SELECT * FROM users WHERE email = $1', [email]);
         if (existingUsers.length > 0) {
@@ -29,12 +64,18 @@ router.post('/register', async (req: Request, res: Response) => {
             return;
         }
 
-        const hashedPassword = await bcrypt.hash(password, 10);
+        const hashedPassword = await bcrypt.hash(password, 12);
+
+        // Generate email verification token
+        const verificationToken = crypto.randomBytes(32).toString('hex');
+        const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+
         await query('BEGIN');
         try {
             const { rows } = await query(
-                'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *',
-                [email, hashedPassword]
+                `INSERT INTO users (email, password, email_verified, verification_token, verification_token_expires)
+                 VALUES ($1, $2, false, $3, $4) RETURNING *`,
+                [email, hashedPassword, verificationToken, verificationExpires]
             );
             const user = rows[0];
 
@@ -53,7 +94,6 @@ router.post('/register', async (req: Request, res: Response) => {
                     await query('DELETE FROM invitations WHERE id = $1', [invite.id]);
                 }
             } else {
-                // Check for any invitations by email
                 const { rows: invites } = await query(
                     'SELECT * FROM invitations WHERE email = $1 AND "expiresAt" > NOW()',
                     [email]
@@ -69,45 +109,77 @@ router.post('/register', async (req: Request, res: Response) => {
 
             await query('COMMIT');
 
-            const token = signJwt({ userId: user.id });
+            // Send verification email
+            const clientUrl = process.env.ALLOWED_ORIGIN?.split(',')[0]?.trim() || 'http://localhost:3000';
+            const verifyLink = `${clientUrl}/verify-email?token=${verificationToken}`;
+            sendEmail(email, 'Verify your email', `
+                <h2>Welcome to DevManus!</h2>
+                <p>Click below to verify your email address:</p>
+                <p><a href="${verifyLink}" style="padding:10px 20px;background:#6366f1;color:white;border-radius:8px;text-decoration:none;">Verify Email</a></p>
+                <p>This link expires in 24 hours.</p>
+            `).catch(err => console.error('[Email] Verification send failed:', err.message));
+
+            // Issue tokens
+            const accessToken = signAccessToken({ userId: user.id });
+            const refreshToken = await createRefreshToken(user.id);
+            setRefreshCookie(res, refreshToken);
+
             res.json(ApiResponse.success({
-                message: 'User registered successfully',
-                data: { token, user: { id: user.id, email: user.email, isAdmin: user.is_admin } },
+                message: 'User registered successfully. Please verify your email.',
+                data: { token: accessToken, user: { id: user.id, email: user.email, isAdmin: user.is_admin, emailVerified: false } },
             }));
         } catch (error) {
             await query('ROLLBACK');
             throw error;
         }
     } catch (error: any) {
+        if (error.name === 'ZodError') {
+            res.status(400).json(ApiResponse.error({ message: error.errors?.[0]?.message || 'Validation failed' }));
+            return;
+        }
         logErrorReport('register', SERVICE_NAME, error, ERROR_CODES.AUTH_REGISTER_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'Registration failed' }));
     }
-});
+}));
 
-router.post('/login', async (req: Request, res: Response) => {
+// ─── POST /login ────────────────────────────────────────────────────
+
+router.post('/login', catchAsync(async (req: Request, res: Response) => {
     try {
-        const schema = z.object({ email: z.string().email(), password: z.string() });
-        const { email, password } = schema.parse(req.body);
+        const { email, password } = loginSchema.parse(req.body);
 
         const { rows } = await query('SELECT * FROM users WHERE email = $1', [email]);
         const user = rows[0];
 
         if (!user) {
-            res.status(401).json(ApiResponse.error({ message: 'Invalid credentials' }));
+            // Same error message whether user exists or not (prevents enumeration)
+            res.status(401).json(ApiResponse.error({ message: 'Invalid email or password' }));
+            return;
+        }
+
+        // Check account lockout
+        if (await isAccountLocked(user.id)) {
+            res.status(423).json(ApiResponse.error({ message: 'Account is temporarily locked due to too many failed attempts. Try again in 15 minutes.' }));
             return;
         }
 
         const isValid = await bcrypt.compare(password, user.password);
         if (!isValid) {
-            res.status(401).json(ApiResponse.error({ message: 'Invalid credentials' }));
+            const lockResult = await recordFailedLogin(user.id);
+            if (lockResult.locked) {
+                res.status(423).json(ApiResponse.error({ message: 'Account locked due to too many failed attempts. Try again in 15 minutes.' }));
+            } else {
+                res.status(401).json(ApiResponse.error({ message: 'Invalid email or password' }));
+            }
             return;
         }
 
-        const token = signJwt({ userId: user.id });
+        // Successful login — reset failed attempts
+        await resetLoginAttempts(user.id);
 
-        // Consume invitations for existing users on login
-        await query('BEGIN');
+        // Consume pending invitations
         try {
+            await query('BEGIN');
             const { rows: invites } = await query(
                 'SELECT * FROM invitations WHERE email = $1 AND "expiresAt" > NOW()',
                 [user.email]
@@ -120,30 +192,139 @@ router.post('/login', async (req: Request, res: Response) => {
                 await query('DELETE FROM invitations WHERE id = $1', [invite.id]);
             }
             await query('COMMIT');
-        } catch (error) {
+        } catch {
             await query('ROLLBACK');
-            // Log but don't fail login
-            console.error('[Invitation] Failed to consume invitations on login:', error);
         }
+
+        const accessToken = signAccessToken({ userId: user.id });
+        const refreshToken = await createRefreshToken(user.id);
+        setRefreshCookie(res, refreshToken);
 
         res.json(ApiResponse.success({
             message: 'Login successful',
-            data: { token, user: { id: user.id, email: user.email, isAdmin: user.is_admin } },
+            data: { token: accessToken, user: { id: user.id, email: user.email, isAdmin: user.is_admin, emailVerified: user.email_verified } },
         }));
     } catch (error: any) {
+        if (error.name === 'ZodError') {
+            res.status(400).json(ApiResponse.error({ message: 'Invalid input' }));
+            return;
+        }
         logErrorReport('login', SERVICE_NAME, error, ERROR_CODES.AUTH_LOGIN_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'Login failed' }));
     }
-});
+}));
 
-router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
+// ─── POST /refresh ──────────────────────────────────────────────────
+// Rotate the refresh token and issue a new access token
+
+router.post('/refresh', catchAsync(async (req: Request, res: Response) => {
+    const oldToken = req.cookies?.refreshToken;
+    if (!oldToken) {
+        res.status(401).json(ApiResponse.error({ message: 'No refresh token' }));
+        return;
+    }
+
+    const userId = await verifyRefreshToken(oldToken);
+    if (!userId) {
+        res.status(401).json(ApiResponse.error({ message: 'Invalid or expired refresh token' }));
+        return;
+    }
+
+    // Revoke old token and issue new pair (rotation)
+    await revokeRefreshToken(oldToken);
+    const accessToken = signAccessToken({ userId });
+    const newRefreshToken = await createRefreshToken(userId);
+    setRefreshCookie(res, newRefreshToken);
+
+    res.json(ApiResponse.success({
+        message: 'Token refreshed',
+        data: { token: accessToken },
+    }));
+}));
+
+// ─── POST /logout ───────────────────────────────────────────────────
+
+router.post('/logout', catchAsync(async (req: Request, res: Response) => {
+    const refreshToken = req.cookies?.refreshToken;
+    if (refreshToken) {
+        await revokeRefreshToken(refreshToken);
+    }
+    res.clearCookie('refreshToken', { path: '/api/auth' });
+    res.json(ApiResponse.success({ message: 'Logged out' }));
+}));
+
+// ─── POST /verify-email ─────────────────────────────────────────────
+
+router.post('/verify-email', catchAsync(async (req: Request, res: Response) => {
+    const schema = z.object({ token: z.string().min(1) });
+    const { token } = schema.parse(req.body);
+
+    const { rows } = await query(
+        'SELECT id FROM users WHERE verification_token = $1 AND verification_token_expires > NOW() AND email_verified = false',
+        [token]
+    );
+
+    if (rows.length === 0) {
+        res.status(400).json(ApiResponse.error({ message: 'Invalid or expired verification token' }));
+        return;
+    }
+
+    await query(
+        'UPDATE users SET email_verified = true, verification_token = NULL, verification_token_expires = NULL WHERE id = $1',
+        [rows[0].id]
+    );
+
+    res.json(ApiResponse.success({ message: 'Email verified successfully' }));
+}));
+
+// ─── POST /resend-verification ──────────────────────────────────────
+
+router.post('/resend-verification', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
+    const { rows } = await query('SELECT id, email, email_verified FROM users WHERE id = $1', [req.user!.userId]);
+    const user = rows[0];
+
+    if (!user) {
+        res.status(404).json(ApiResponse.error({ message: 'User not found' }));
+        return;
+    }
+
+    if (user.email_verified) {
+        res.json(ApiResponse.success({ message: 'Email already verified' }));
+        return;
+    }
+
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await query(
+        'UPDATE users SET verification_token = $1, verification_token_expires = $2 WHERE id = $3',
+        [verificationToken, verificationExpires, user.id]
+    );
+
+    const clientUrl = process.env.ALLOWED_ORIGIN?.split(',')[0]?.trim() || 'http://localhost:3000';
+    const verifyLink = `${clientUrl}/verify-email?token=${verificationToken}`;
+    await sendEmail(user.email, 'Verify your email', `
+        <p>Click below to verify your email:</p>
+        <p><a href="${verifyLink}">Verify Email</a></p>
+        <p>Expires in 24 hours.</p>
+    `);
+
+    res.json(ApiResponse.success({ message: 'Verification email sent' }));
+}));
+
+// ─── GET /me ────────────────────────────────────────────────────────
+
+router.get('/me', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         if (!req.user?.userId) {
-            res.status(401).json(ApiResponse.error({ message: 'Unauthorized' }));
+            res.status(401).json(ApiResponse.error({ message: 'Authentication required' }));
             return;
         }
 
-        const { rows } = await query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+        const { rows } = await query(
+            'SELECT id, email, name, avatar_url, is_admin, settings, email_verified FROM users WHERE id = $1',
+            [req.user.userId]
+        );
 
         if (rows.length === 0) {
             res.status(404).json(ApiResponse.error({ message: 'User not found' }));
@@ -158,20 +339,22 @@ router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
                 name: rows[0].name || null,
                 avatarUrl: rows[0].avatar_url || null,
                 isAdmin: rows[0].is_admin,
-                settings: rows[0].settings || {}
+                settings: rows[0].settings || {},
+                emailVerified: rows[0].email_verified,
             },
         }));
     } catch (error: any) {
         logErrorReport('getProfile', SERVICE_NAME, error, ERROR_CODES.AUTH_PROFILE_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch profile' }));
     }
-});
+}));
 
-// Update profile
-router.patch('/profile', authMiddleware, async (req: AuthRequest, res: Response) => {
+// ─── PATCH /profile ─────────────────────────────────────────────────
+
+router.patch('/profile', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         if (!req.user?.userId) {
-            res.status(401).json(ApiResponse.error({ message: 'Unauthorized' }));
+            res.status(401).json(ApiResponse.error({ message: 'Authentication required' }));
             return;
         }
 
@@ -182,26 +365,13 @@ router.patch('/profile', authMiddleware, async (req: AuthRequest, res: Response)
         });
 
         const input = schema.parse(req.body);
-
         const fields: string[] = [];
         const values: any[] = [];
         let idx = 1;
 
-        if (input.name !== undefined) {
-            fields.push(`name = $${idx}`);
-            values.push(input.name);
-            idx++;
-        }
-        if (input.avatarUrl !== undefined) {
-            fields.push(`avatar_url = $${idx}`);
-            values.push(input.avatarUrl);
-            idx++;
-        }
-        if (input.settings !== undefined) {
-            fields.push(`settings = $${idx}`);
-            values.push(input.settings);
-            idx++;
-        }
+        if (input.name !== undefined) { fields.push(`name = $${idx}`); values.push(input.name); idx++; }
+        if (input.avatarUrl !== undefined) { fields.push(`avatar_url = $${idx}`); values.push(input.avatarUrl); idx++; }
+        if (input.settings !== undefined) { fields.push(`settings = $${idx}`); values.push(input.settings); idx++; }
 
         if (fields.length === 0) {
             res.status(400).json(ApiResponse.error({ message: 'No fields to update' }));
@@ -212,28 +382,23 @@ router.patch('/profile', authMiddleware, async (req: AuthRequest, res: Response)
         values.push(req.user.userId);
 
         const { rows } = await query(
-            `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, email, name, avatar_url`,
+            `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, email, name, avatar_url, settings`,
             values
         );
 
         res.json(ApiResponse.success({
             message: 'Profile updated successfully',
-            data: {
-                id: rows[0].id,
-                email: rows[0].email,
-                name: rows[0].name,
-                avatarUrl: rows[0].avatar_url,
-                settings: rows[0].settings || {}
-            },
+            data: { id: rows[0].id, email: rows[0].email, name: rows[0].name, avatarUrl: rows[0].avatar_url, settings: rows[0].settings || {} },
         }));
     } catch (error: any) {
         logErrorReport('updateProfile', SERVICE_NAME, error, ERROR_CODES.AUTH_PROFILE_UPDATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to update profile' }));
     }
-});
+}));
 
-// /forgot-password
-router.post('/forgot-password', resetLimiter, async (req: Request, res: Response) => {
+// ─── POST /forgot-password ──────────────────────────────────────────
+
+router.post('/forgot-password', resetLimiter, catchAsync(async (req: Request, res: Response) => {
     try {
         const schema = z.object({ email: z.string().email() });
         const { email } = schema.parse(req.body);
@@ -241,52 +406,51 @@ router.post('/forgot-password', resetLimiter, async (req: Request, res: Response
         const { rows } = await query('SELECT id, email FROM users WHERE email = $1', [email]);
         const user = rows[0];
 
+        // Always return same message (prevents user enumeration)
+        const successMsg = 'If that email exists, we sent a password reset link.';
+
         if (!user) {
-            // For security, do not reveal if user exists
-            res.json(ApiResponse.success({ message: 'If that email exists, we sent a password reset link.' }));
+            res.json(ApiResponse.success({ message: successMsg }));
             return;
         }
 
-        // Generate token
         const token = crypto.randomBytes(32).toString('hex');
-        const expiresAt = new Date(Date.now() + 3600 * 1000); // 1 hour
+        const expiresAt = new Date(Date.now() + 3600 * 1000);
 
-        // Clear old tokens for this user
         await query('DELETE FROM password_reset_tokens WHERE user_id = $1', [user.id]);
-
-        // Save new token
         await query(
             'INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)',
             [token, user.id, expiresAt]
         );
 
-        // Send email
-        const resetLink = `${process.env.CLIENT_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
-        await sendEmail(
-            email,
-            'Reset Your Password',
-            `<p>You requested a password reset. Click the link below to reset your password:</p>
-             <p><a href="${resetLink}">Reset Password</a></p>
-             <p>This link expires in 1 hour.</p>`
-        );
+        const clientUrl = process.env.ALLOWED_ORIGIN?.split(',')[0]?.trim() || 'http://localhost:3000';
+        const resetLink = `${clientUrl}/reset-password?token=${token}`;
+        await sendEmail(email, 'Reset Your Password', `
+            <p>You requested a password reset. Click below:</p>
+            <p><a href="${resetLink}">Reset Password</a></p>
+            <p>This link expires in 1 hour.</p>
+        `);
 
-        res.json(ApiResponse.success({ message: 'If that email exists, we sent a password reset link.' }));
+        res.json(ApiResponse.success({ message: successMsg }));
     } catch (error: any) {
         logErrorReport('forgotPassword', SERVICE_NAME, error, ERROR_CODES.AUTH_PASSWORD_RESET_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to process request' }));
     }
-});
+}));
 
-// /reset-password
-router.post('/reset-password', resetLimiter, async (req: Request, res: Response) => {
+// ─── POST /reset-password ───────────────────────────────────────────
+
+router.post('/reset-password', resetLimiter, catchAsync(async (req: Request, res: Response) => {
     try {
-        const schema = z.object({
-            token: z.string(),
-            password: z.string().min(6)
-        });
+        const schema = z.object({ token: z.string(), password: passwordSchema });
         const { token, password } = schema.parse(req.body);
 
-        // Verify token
+        const pwCheck = validatePassword(password);
+        if (!pwCheck.valid) {
+            res.status(400).json(ApiResponse.error({ message: `Weak password: ${pwCheck.errors.join(', ')}` }));
+            return;
+        }
+
         const { rows: tokenRows } = await query(
             'SELECT * FROM password_reset_tokens WHERE token = $1 AND expires_at > NOW()',
             [token]
@@ -298,22 +462,18 @@ router.post('/reset-password', resetLimiter, async (req: Request, res: Response)
         }
 
         const userId = tokenRows[0].user_id;
-
-        // Update password
-        const hashedPassword = await bcrypt.hash(password, 10);
-        await query(
-            'UPDATE users SET password = $1 WHERE id = $2',
-            [hashedPassword, userId]
-        );
-
-        // Delete token
+        const hashedPassword = await bcrypt.hash(password, 12);
+        await query('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, userId]);
         await query('DELETE FROM password_reset_tokens WHERE token = $1', [token]);
+
+        // Revoke all refresh tokens on password change
+        await revokeAllUserTokens(userId);
 
         res.json(ApiResponse.success({ message: 'Password reset successfully' }));
     } catch (error: any) {
         logErrorReport('resetPassword', SERVICE_NAME, error, ERROR_CODES.AUTH_PASSWORD_RESET_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to reset password' }));
     }
-});
+}));
 
 export default router;

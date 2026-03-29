@@ -9,14 +9,16 @@ export interface WebhookEvent {
     payload: any;
 }
 
+// Retry delays in ms: 1 min, 5 min, 30 min
+const RETRY_DELAYS = [60_000, 300_000, 1_800_000];
+const MAX_RETRIES = RETRY_DELAYS.length;
+
 export const webhookService = {
     async dispatch(event: WebhookEvent) {
         try {
-            // Find all active webhooks subscribed to this event
-            // Either global webhooks (documentationId is null) or specific to this collection
             const sql = `
-                SELECT * FROM webhooks 
-                WHERE "isActive" = true 
+                SELECT * FROM webhooks
+                WHERE "isActive" = true
                 AND ( "documentationId" IS NULL OR "documentationId" = $1 )
                 AND events @> $2::jsonb
             `;
@@ -26,27 +28,52 @@ export const webhookService = {
             ]);
 
             for (const webhook of webhooks) {
-                this.deliver(webhook, event);
+                // Fire initial delivery (non-blocking)
+                this.deliverWithRetry(webhook, event, 0);
             }
         } catch (err: any) {
             log('error', `[Webhook] Dispatch failed for event ${event.event}`, err.message);
         }
     },
 
-    async deliver(webhook: any, event: WebhookEvent) {
-        const timestamp = Date.now();
+    /**
+     * Deliver a webhook with exponential backoff retry.
+     * attempt=0 is the first try, attempt=1/2/3 are retries.
+     */
+    async deliverWithRetry(webhook: any, event: WebhookEvent, attempt: number) {
+        const result = await this.deliver(webhook, event, attempt);
+
+        if (!result.isSuccess && attempt < MAX_RETRIES) {
+            const delay = RETRY_DELAYS[attempt];
+            log('warn', `[Webhook] Delivery failed for ${webhook.url}, retrying in ${delay / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+
+            setTimeout(() => {
+                this.deliverWithRetry(webhook, event, attempt + 1);
+            }, delay);
+        } else if (!result.isSuccess && attempt >= MAX_RETRIES) {
+            // Dead letter — all retries exhausted
+            log('error', `[Webhook] All ${MAX_RETRIES} retries exhausted for ${webhook.url}. Moving to dead letter.`);
+            await this.deadLetter(webhook, event, result.statusCode, result.responseBody);
+        }
+    },
+
+    /**
+     * Single delivery attempt. Returns result for retry decision.
+     */
+    async deliver(webhook: any, event: WebhookEvent, attempt = 0): Promise<{ isSuccess: boolean; statusCode: number | null; responseBody: string | null }> {
+        const deliveryId = crypto.randomUUID();
         const payload = {
-            id: crypto.randomUUID(),
+            id: deliveryId,
             event: event.event,
             documentationId: event.documentationId,
-            timestamp: new Date(timestamp).toISOString(),
-            data: event.payload
+            timestamp: new Date().toISOString(),
+            data: event.payload,
         };
 
         const headers: Record<string, string> = {
             'Content-Type': 'application/json',
             'X-DevManus-Event': event.event,
-            'X-DevManus-Delivery': payload.id
+            'X-DevManus-Delivery': deliveryId,
         };
 
         if (webhook.secret) {
@@ -70,15 +97,32 @@ export const webhookService = {
             isSuccess = false;
         }
 
-        // Log delivery
+        // Log delivery attempt
         try {
             await query(
-                `INSERT INTO webhook_logs ("webhookId", event, "statusCode", response, "isSuccess") 
+                `INSERT INTO webhook_logs ("webhookId", event, "statusCode", response, "isSuccess")
                  VALUES ($1, $2, $3, $4, $5)`,
-                [webhook.id, event.event, statusCode, responseBody, isSuccess]
+                [webhook.id, `${event.event}${attempt > 0 ? ` (retry ${attempt})` : ''}`, statusCode, responseBody, isSuccess]
             );
         } catch (logErr) {
             console.error('[Webhook] Failed to log delivery:', logErr);
         }
-    }
+
+        return { isSuccess, statusCode, responseBody };
+    },
+
+    /**
+     * Dead letter — store permanently failed deliveries for manual inspection.
+     */
+    async deadLetter(webhook: any, event: WebhookEvent, statusCode: number | null, lastError: string | null) {
+        try {
+            await query(
+                `INSERT INTO webhook_logs ("webhookId", event, "statusCode", response, "isSuccess")
+                 VALUES ($1, $2, $3, $4, false)`,
+                [webhook.id, `DEAD_LETTER: ${event.event}`, statusCode, `All ${MAX_RETRIES} retries failed. Last error: ${lastError}`]
+            );
+        } catch (err) {
+            console.error('[Webhook] Failed to write dead letter:', err);
+        }
+    },
 };
