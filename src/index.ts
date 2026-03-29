@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import './utils/env';
-import { authLimiter, generalLimiter } from './middleware/rateLimit';
+import { generalLimiter } from './middleware/rateLimit';
 import { errorHandler, requestIdMiddleware } from './middleware/errorHandler';
 import { checkDbHealth } from './utils/db';
 import { generateOpenAPISpec, getSwaggerHTML } from './utils/apiDocs';
@@ -101,8 +101,8 @@ app.use((req, _res, next) => {
 });
 
 app.use(githubAccountMiddleware);
-app.use('/api/auth', authLimiter, authRoutes);
-app.use('/api/auth/github', githubAuthRoutes);
+app.use('/api/auth', generalLimiter, authRoutes);  // /me, /profile, /refresh use general limiter
+app.use('/api/auth/github', generalLimiter, githubAuthRoutes);
 app.use('/api/documentation', generalLimiter, documentationRoutes);
 app.use('/api/documentation', generalLimiter, foldersRoutes);
 app.use('/api/documentation', generalLimiter, environmentsRoutes);
