@@ -12,7 +12,7 @@ import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
 import { ERROR_CODES } from '../constants/errorCodes';
 import { sendEmail } from '../utils/email';
-import { resetLimiter } from '../middleware/rateLimit';
+import { resetLimiter, authLimiter } from '../middleware/rateLimit';
 import { catchAsync } from '../utils/catchAsync';
 
 const SERVICE_NAME = 'AuthService';
@@ -47,7 +47,7 @@ function setRefreshCookie(res: Response, token: string) {
 
 // ─── POST /register ─────────────────────────────────────────────────
 
-router.post('/register', catchAsync(async (req: Request, res: Response) => {
+router.post('/register', authLimiter, catchAsync(async (req: Request, res: Response) => {
     try {
         const { email, password, inviteToken } = registerSchema.parse(req.body);
 
@@ -144,7 +144,7 @@ router.post('/register', catchAsync(async (req: Request, res: Response) => {
 
 // ─── POST /login ────────────────────────────────────────────────────
 
-router.post('/login', catchAsync(async (req: Request, res: Response) => {
+router.post('/login', authLimiter, catchAsync(async (req: Request, res: Response) => {
     try {
         const { email, password } = loginSchema.parse(req.body);
 
