@@ -1,25 +1,27 @@
 import { Request, Response, NextFunction } from 'express';
 import { verifyJwt, UserPayload } from '../utils/jwt';
+import { ApiResponse } from '../utils/response';
 
 export interface AuthRequest extends Request {
     user?: UserPayload;
+    requestId?: string;
 }
 
+/**
+ * Required auth middleware.
+ * Only accepts Bearer token from Authorization header (not query params).
+ */
 export const authMiddleware = (req: AuthRequest, res: Response, next: NextFunction) => {
-    let token = req.headers.authorization?.split(' ')[1];
-
-    if (!token && req.query.token) {
-        token = req.query.token as string;
-    }
+    const token = req.headers.authorization?.split(' ')[1];
 
     if (!token) {
-        res.status(401).json({ message: 'Unauthorized' });
+        res.status(401).json(ApiResponse.error({ message: 'Authentication required' }));
         return;
     }
 
     const decoded = verifyJwt(token);
     if (!decoded) {
-        res.status(401).json({ message: 'Invalid token' });
+        res.status(401).json(ApiResponse.error({ message: 'Authentication required' }));
         return;
     }
 
@@ -27,12 +29,11 @@ export const authMiddleware = (req: AuthRequest, res: Response, next: NextFuncti
     next();
 };
 
+/**
+ * Optional auth middleware — doesn't fail if no token.
+ */
 export const optionalAuthMiddleware = (req: AuthRequest, _res: Response, next: NextFunction) => {
-    let token = req.headers.authorization?.split(' ')[1];
-
-    if (!token && req.query.token) {
-        token = req.query.token as string;
-    }
+    const token = req.headers.authorization?.split(' ')[1];
 
     if (token) {
         const decoded = verifyJwt(token);

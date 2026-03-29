@@ -8,6 +8,7 @@ import { ERROR_CODES } from '../constants/errorCodes';
 import { checkAccess, canAdmin } from '../utils/rbac';
 import crypto from 'crypto';
 import { sendEmail, parseTemplate } from '../utils/email';
+import { catchAsync } from '../utils/catchAsync';
 
 const SERVICE_NAME = 'CollaborationService';
 const router = Router();
@@ -33,7 +34,7 @@ function broadcastPresence(documentationId: string) {
 }
 
 // Presence SSE endpoint
-router.get('/presence/:documentationId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/presence/:documentationId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
         const userId = req.user!.userId;
@@ -130,10 +131,10 @@ router.get('/presence/:documentationId', authMiddleware, async (req: AuthRequest
         logErrorReport('presence', SERVICE_NAME, error, ERROR_CODES.COLLAB_FETCH_FAILED);
         res.end();
     }
-});
+}));
 
 // Presence update endpoint
-router.post('/presence/:documentationId/update', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/presence/:documentationId/update', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
         const userId = req.user!.userId;
@@ -154,10 +155,10 @@ router.post('/presence/:documentationId/update', authMiddleware, async (req: Aut
     } catch (error: any) {
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
-});
+}));
 
 // List invitations for the current user
-router.get('/my-invitations', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/my-invitations', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { rows: userRows } = await query('SELECT email FROM users WHERE id = $1', [req.user!.userId]);
         const email = userRows[0].email;
@@ -179,10 +180,10 @@ router.get('/my-invitations', authMiddleware, async (req: AuthRequest, res: Resp
         logErrorReport('listMyInvitations', SERVICE_NAME, error, ERROR_CODES.COLLAB_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch invitations' }));
     }
-});
+}));
 
 // Send an invitation
-router.post('/invite', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/invite', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             email: z.string().email(),
@@ -286,10 +287,10 @@ router.post('/invite', authMiddleware, async (req: AuthRequest, res: Response) =
         logErrorReport('inviteUser', SERVICE_NAME, error, ERROR_CODES.COLLAB_INVITE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to send invitation' }));
     }
-});
+}));
 
 // List collaborators for a documentation
-router.get('/:documentationId/collaborators', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:documentationId/collaborators', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
         const access = await checkAccess(documentationId, req.user!.userId);
@@ -322,10 +323,10 @@ router.get('/:documentationId/collaborators', authMiddleware, async (req: AuthRe
         logErrorReport('listCollaborators', SERVICE_NAME, error, ERROR_CODES.COLLAB_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch collaborators' }));
     }
-});
+}));
 
 // Accept an invitation
-router.post('/accept', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/accept', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { token } = req.body;
         if (!token) {
@@ -379,10 +380,10 @@ router.post('/accept', authMiddleware, async (req: AuthRequest, res: Response) =
         logErrorReport('acceptInvite', SERVICE_NAME, error, ERROR_CODES.COLLAB_ACCEPT_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to accept invitation' }));
     }
-});
+}));
 
 // Remove a collaborator
-router.delete('/collaborators/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/collaborators/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
 
@@ -408,10 +409,10 @@ router.delete('/collaborators/:id', authMiddleware, async (req: AuthRequest, res
         logErrorReport('removeCollaborator', SERVICE_NAME, error, ERROR_CODES.COLLAB_REMOVE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to remove collaborator' }));
     }
-});
+}));
 
 // Update collaborator role
-router.patch('/collaborators/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/collaborators/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
         const schema = z.object({
@@ -441,10 +442,10 @@ router.patch('/collaborators/:id', authMiddleware, async (req: AuthRequest, res:
         logErrorReport('updateCollaboratorRole', SERVICE_NAME, error, ERROR_CODES.COLLAB_UPDATE_ROLE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to update collaborator role' }));
     }
-});
+}));
 
 // Cancel invitation
-router.delete('/invitations/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/invitations/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
         const { rows: invites } = await query('SELECT "documentationId" FROM invitations WHERE id = $1', [id]);
@@ -466,6 +467,6 @@ router.delete('/invitations/:id', authMiddleware, async (req: AuthRequest, res: 
         logErrorReport('cancelInvitation', SERVICE_NAME, error, ERROR_CODES.COLLAB_CANCEL_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to cancel invitation' }));
     }
-});
+}));
 
 export default router;

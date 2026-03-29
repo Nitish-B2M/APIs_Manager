@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { ApiResponse } from '../utils/response';
 import { logErrorReport, addLogListener, removeLogListener, LogEntry } from '../utils/logger';
 import { ERROR_CODES } from '../constants/errorCodes';
+import { catchAsync } from '../utils/catchAsync';
 
 const SERVICE_NAME = 'AdminService';
 const router = Router();
@@ -39,18 +40,18 @@ router.use(authMiddleware);
 router.use(adminMiddleware);
 
 // List all email templates
-router.get('/templates', async (_req: AuthRequest, res: Response) => {
+router.get('/templates', catchAsync(async (_req: AuthRequest, res: Response) => {
     try {
-        const { rows } = await query('SELECT * FROM email_templates ORDER BY "createdAt" DESC');
+        const { rows } = await query('SELECT * FROM email_templates ORDER BY "createdAt" DESC LIMIT 100');
         res.json(ApiResponse.success({ message: 'Templates fetched', data: rows }));
     } catch (error: any) {
         logErrorReport('listTemplates', SERVICE_NAME, error, ERROR_CODES.ADMIN_TEMPLATE_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch templates' }));
     }
-});
+}));
 
 // Get a single template
-router.get('/templates/:id', async (req: AuthRequest, res: Response) => {
+router.get('/templates/:id', catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { rows } = await query('SELECT * FROM email_templates WHERE id = $1', [req.params.id]);
         if (rows.length === 0) {
@@ -62,10 +63,10 @@ router.get('/templates/:id', async (req: AuthRequest, res: Response) => {
         logErrorReport('getTemplate', SERVICE_NAME, error, ERROR_CODES.ADMIN_TEMPLATE_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch template' }));
     }
-});
+}));
 
 // Create a new template
-router.post('/templates', async (req: AuthRequest, res: Response) => {
+router.post('/templates', catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             name: z.string(),
@@ -95,10 +96,10 @@ router.post('/templates', async (req: AuthRequest, res: Response) => {
         logErrorReport('createTemplate', SERVICE_NAME, error, ERROR_CODES.ADMIN_TEMPLATE_CREATE_FAILED);
         res.status(error instanceof z.ZodError ? 400 : 500).json(ApiResponse.error({ message: error.message || 'Failed to create template' }));
     }
-});
+}));
 
 // Update a template
-router.patch('/templates/:id', async (req: AuthRequest, res: Response) => {
+router.patch('/templates/:id', catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             name: z.string().optional(),
@@ -149,10 +150,10 @@ router.patch('/templates/:id', async (req: AuthRequest, res: Response) => {
         logErrorReport('updateTemplate', SERVICE_NAME, error, ERROR_CODES.ADMIN_TEMPLATE_UPDATE_FAILED);
         res.status(error instanceof z.ZodError ? 400 : 500).json(ApiResponse.error({ message: error.message || 'Failed to update template' }));
     }
-});
+}));
 
 // Delete a template
-router.delete('/templates/:id', async (req: AuthRequest, res: Response) => {
+router.delete('/templates/:id', catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         await query('DELETE FROM email_templates WHERE id = $1', [req.params.id]);
         res.json(ApiResponse.success({ message: 'Template deleted' }));
@@ -160,10 +161,10 @@ router.delete('/templates/:id', async (req: AuthRequest, res: Response) => {
         logErrorReport('deleteTemplate', SERVICE_NAME, error, ERROR_CODES.ADMIN_TEMPLATE_DELETE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to delete template' }));
     }
-});
+}));
 
 // List email logs (for analytics)
-router.get('/logs', async (_req: AuthRequest, res: Response) => {
+router.get('/logs', catchAsync(async (_req: AuthRequest, res: Response) => {
     try {
         const { rows } = await query(`
             SELECT l.*, t.name as "templateName", d.title as "documentationTitle"
@@ -178,6 +179,6 @@ router.get('/logs', async (_req: AuthRequest, res: Response) => {
         logErrorReport('listLogs', SERVICE_NAME, error, ERROR_CODES.ADMIN_LOGS_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch logs' }));
     }
-});
+}));
 
 export default router;

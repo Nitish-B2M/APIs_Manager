@@ -4,11 +4,12 @@ import { query } from '../utils/db';
 import { ApiResponse } from '../utils/response';
 import { z } from 'zod';
 import { checkAccess, canAdmin } from '../utils/rbac';
+import { catchAsync } from '../utils/catchAsync';
 
 const router = Router();
 
 // List webhooks for a documentation
-router.get('/:documentationId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:documentationId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
         const access = await checkAccess(documentationId, req.user!.userId);
@@ -25,10 +26,10 @@ router.get('/:documentationId', authMiddleware, async (req: AuthRequest, res: Re
     } catch (error: any) {
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
-});
+}));
 
 // Create webhook
-router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             documentationId: z.string().uuid(),
@@ -55,10 +56,10 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
     } catch (error: any) {
         res.status(400).json(ApiResponse.error({ message: error.message }));
     }
-});
+}));
 
 // Delete webhook
-router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
         const { rows: webhooks } = await query('SELECT "documentationId" FROM webhooks WHERE id = $1', [id]);
@@ -79,10 +80,10 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
     } catch (error: any) {
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
-});
+}));
 
 // List logs for a specific webhook
-router.get('/:id/logs', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:id/logs', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
         const { rows: webhooks } = await query('SELECT "documentationId" FROM webhooks WHERE id = $1', [id]);
@@ -106,6 +107,6 @@ router.get('/:id/logs', authMiddleware, async (req: AuthRequest, res: Response) 
     } catch (error: any) {
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
-});
+}));
 
 export default router;

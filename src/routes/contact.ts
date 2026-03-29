@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ContactModel } from '../models/Contact';
 import { authMiddleware } from '../middleware/auth';
 import { adminMiddleware } from '../middleware/adminAuth';
+import { catchAsync } from '../utils/catchAsync';
 
 const router = express.Router();
 
@@ -13,7 +14,7 @@ const contactSchema = z.object({
 });
 
 // Public route to submit a contact form
-router.post('/', async (req, res) => {
+router.post('/', catchAsync(async (req, res) => {
     try {
         const validatedData = contactSchema.parse(req.body);
         const newContact = await ContactModel.create({
@@ -33,13 +34,13 @@ router.post('/', async (req, res) => {
         }
         return res.status(500).json({ success: false, message: 'Failed to submit contact form.' });
     }
-});
+}));
 
 // Admin ONLY routes
 router.use(authMiddleware as any);
 router.use(adminMiddleware as any);
 
-router.get('/', async (req, res) => {
+router.get('/', catchAsync(async (req, res) => {
     try {
         const { status } = req.query;
         const contacts = await ContactModel.findAll(status as string);
@@ -47,9 +48,9 @@ router.get('/', async (req, res) => {
     } catch (error) {
         return res.status(500).json({ success: false, message: 'Failed to fetch messages.' });
     }
-});
+}));
 
-router.put('/:id/status', async (req, res) => {
+router.put('/:id/status', catchAsync(async (req, res) => {
     try {
         const { id } = req.params;
         const { status } = req.body;
@@ -57,8 +58,7 @@ router.put('/:id/status', async (req, res) => {
         if (!['NEW', 'IN_PROGRESS', 'RESOLVED'].includes(status)) {
             return res.status(400).json({ success: false, message: 'Invalid status' });
         }
-
-        const updated = await ContactModel.updateStatus(id, status as any);
+        const updated = await ContactModel.updateStatus(id as string, status as any);
         if (!updated) {
             return res.status(404).json({ success: false, message: 'Message not found' });
         }
@@ -67,12 +67,12 @@ router.put('/:id/status', async (req, res) => {
     } catch (error) {
         return res.status(500).json({ success: false, message: 'Failed to update status.' });
     }
-});
+}));
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', catchAsync(async (req, res) => {
     try {
         const { id } = req.params;
-        const success = await ContactModel.delete(id);
+        const success = await ContactModel.delete(id as string);
         if (!success) {
             return res.status(404).json({ success: false, message: 'Message not found' });
         }
@@ -80,6 +80,6 @@ router.delete('/:id', async (req, res) => {
     } catch (error) {
         return res.status(500).json({ success: false, message: 'Failed to delete message.' });
     }
-});
+}));
 
 export default router;

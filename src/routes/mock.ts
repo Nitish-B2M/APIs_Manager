@@ -4,13 +4,14 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { checkAccess, canEdit } from '../utils/rbac';
 import { query } from '../utils/db';
 import { ApiResponse } from '../utils/response';
+import { catchAsync } from '../utils/catchAsync';
 
 const router = Router();
 
 // --- Management Routes (Authenticated) ---
 
 // Get mock config for a request
-router.get('/config/:requestId', authMiddleware, async (req: AuthRequest, res) => {
+router.get('/config/:requestId', authMiddleware, catchAsync(async (req: AuthRequest, res) => {
     try {
         const requestId = req.params.requestId as string;
 
@@ -31,10 +32,10 @@ router.get('/config/:requestId', authMiddleware, async (req: AuthRequest, res) =
     } catch (error: any) {
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
-});
+}));
 
 // Update mock config
-router.post('/config', authMiddleware, async (req: AuthRequest, res) => {
+router.post('/config', authMiddleware, catchAsync(async (req: AuthRequest, res) => {
     try {
         const { requestId } = req.body;
         if (!requestId) {
@@ -59,13 +60,13 @@ router.post('/config', authMiddleware, async (req: AuthRequest, res) => {
     } catch (error: any) {
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
-});
+}));
 
 // --- Mock Server Engine (Public) ---
 
 // Wildcard route to handle mock requests
 // Format: /m/:requestId/*
-router.all('/:requestId*', async (req, res) => {
+router.all('/:requestId*', catchAsync(async (req, res) => {
     const fullParams = req.params as any;
     const requestId = fullParams.requestId;
 
@@ -87,7 +88,7 @@ router.all('/:requestId*', async (req, res) => {
 
         // Evaluate conditional rules
         const matchedRule = mockService.evaluateRules(mock.rules, req);
-        
+
         if (matchedRule) {
             if (matchedRule.headers) {
                 Object.entries(matchedRule.headers).forEach(([key, value]) => {
@@ -112,6 +113,6 @@ router.all('/:requestId*', async (req, res) => {
         res.status(500).json({ error: 'Mock server error', message: error.message });
         return;
     }
-});
+}));
 
 export default router;

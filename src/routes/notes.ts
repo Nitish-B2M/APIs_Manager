@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
 import { ERROR_CODES } from '../constants/errorCodes';
+import { catchAsync } from '../utils/catchAsync';
+import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 
 const SERVICE_NAME = 'NoteService';
 const router = express.Router();
@@ -15,6 +17,8 @@ const createNoteSchema = z.object({
     content_json: z.any().optional(),
     content_html: z.string().optional(),
     default_font: z.string().max(100).optional(),
+    referenceId: z.string().uuid().optional().nullable(),
+    referenceType: z.string().max(100).optional().nullable(),
 });
 
 const updateNoteSchema = z.object({
@@ -22,6 +26,8 @@ const updateNoteSchema = z.object({
     content_json: z.any().optional(),
     content_html: z.string().optional(),
     default_font: z.string().max(100).optional(),
+    referenceId: z.string().uuid().optional().nullable(),
+    referenceType: z.string().max(100).optional().nullable(),
 });
 
 // --- Sanitize HTML (basic XSS prevention) ---
@@ -33,26 +39,51 @@ function sanitizeHtml(html: string): string {
         .replace(/javascript:/gi, '');
 }
 
-// GET all notes for a user (not deleted)
-router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
+// GET all notes for a user (paginated)
+router.get('/', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user?.userId;
+        const referenceId = req.query.referenceId as string | undefined;
+        const referenceType = req.query.referenceType as string | undefined;
+        const pg = parsePagination(req, { limit: 30, sortBy: 'updatedAt' });
+
+        let whereClause = '"userId" = $1 AND is_deleted = false';
+        const queryParams: any[] = [userId];
+
+        if (referenceId) {
+            queryParams.push(referenceId);
+            whereClause += ` AND "referenceId" = $${queryParams.length}`;
+        }
+        if (referenceType) {
+            queryParams.push(referenceType);
+            whereClause += ` AND "referenceType" = $${queryParams.length}`;
+        }
+
+        const countResult = await query(`SELECT COUNT(*) FROM notes WHERE ${whereClause}`, queryParams);
+        const total = parseInt(countResult.rows[0].count, 10);
+
+        queryParams.push(pg.limit, pg.offset);
         const result = await query(
-            'SELECT id, title, default_font, is_pinned, "createdAt", "updatedAt" FROM notes WHERE "userId" = $1 AND is_deleted = false ORDER BY is_pinned DESC, "updatedAt" DESC',
-            [userId]
+            `SELECT id, title, default_font, is_pinned, "createdAt", "updatedAt", "referenceId", "referenceType"
+             FROM notes WHERE ${whereClause}
+             ORDER BY is_pinned DESC, "updatedAt" DESC
+             LIMIT $${queryParams.length - 1} OFFSET $${queryParams.length}`,
+            queryParams
         );
+
         res.json(ApiResponse.success({
             message: 'Notes fetched successfully',
             data: result.rows,
+            pagination: buildPaginationMeta(total, pg),
         }));
     } catch (error) {
         logErrorReport('getNotes', SERVICE_NAME, error, ERROR_CODES.NOTE_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch notes' }));
     }
-});
+}));
 
 // GET a single note by id
-router.get('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user?.userId;
         const noteId = req.params.id;
@@ -75,21 +106,21 @@ router.get('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
         logErrorReport('getNoteById', SERVICE_NAME, error, ERROR_CODES.NOTE_FETCH_SINGLE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch note' }));
     }
-});
+}));
 
 // CREATE a new note
-router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user?.userId;
-        const { title, content_json, content_html, default_font } = createNoteSchema.parse(req.body);
+        const { title, content_json, content_html, default_font, referenceId, referenceType } = createNoteSchema.parse(req.body);
 
         const safeHtml = content_html ? sanitizeHtml(content_html) : null;
 
         const result = await query(
-            `INSERT INTO notes ("userId", title, content_json, content_html, default_font)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO notes ("userId", title, content_json, content_html, default_font, "referenceId", "referenceType")
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              RETURNING *`,
-            [userId, title, content_json ? JSON.stringify(content_json) : null, safeHtml, default_font || 'Inter']
+            [userId, title, content_json ? JSON.stringify(content_json) : null, safeHtml, default_font || 'Inter', referenceId || null, referenceType || null]
         );
 
         res.status(201).json(ApiResponse.success({
@@ -104,10 +135,10 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
         logErrorReport('createNote', SERVICE_NAME, error, ERROR_CODES.NOTE_CREATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to create note' }));
     }
-});
+}));
 
 // UPDATE a note
-router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.put('/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user?.userId;
         const noteId = req.params.id;
@@ -147,6 +178,16 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
             values.push(updates.default_font);
             idx++;
         }
+        if (updates.referenceId !== undefined) {
+            fields.push(`"referenceId" = $${idx}`);
+            values.push(updates.referenceId);
+            idx++;
+        }
+        if (updates.referenceType !== undefined) {
+            fields.push(`"referenceType" = $${idx}`);
+            values.push(updates.referenceType);
+            idx++;
+        }
 
         if (fields.length === 0) {
             res.json(ApiResponse.success({
@@ -180,10 +221,10 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
         logErrorReport('updateNote', SERVICE_NAME, error, ERROR_CODES.NOTE_UPDATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to update note' }));
     }
-});
+}));
 
 // DELETE a note (Soft Delete)
-router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user?.userId;
         const noteId = req.params.id;
@@ -203,10 +244,10 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
         logErrorReport('deleteNote', SERVICE_NAME, error, ERROR_CODES.NOTE_DELETE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to delete note' }));
     }
-});
+}));
 
 // TOGGLE pin on a note
-router.patch('/:id/pin', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/:id/pin', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user?.userId;
         const noteId = req.params.id;
@@ -229,10 +270,10 @@ router.patch('/:id/pin', authMiddleware, async (req: AuthRequest, res: Response)
         logErrorReport('togglePin', SERVICE_NAME, error, ERROR_CODES.NOTE_PIN_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to toggle pin' }));
     }
-});
+}));
 
 // GET trash (soft-deleted notes)
-router.get('/trash/list', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/trash/list', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user?.userId;
         const result = await query(
@@ -247,10 +288,10 @@ router.get('/trash/list', authMiddleware, async (req: AuthRequest, res: Response
         logErrorReport('getTrash', SERVICE_NAME, error, ERROR_CODES.NOTE_TRASH_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch trash' }));
     }
-});
+}));
 
 // RESTORE a deleted note
-router.patch('/:id/restore', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/:id/restore', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user?.userId;
         const noteId = req.params.id;
@@ -273,6 +314,6 @@ router.patch('/:id/restore', authMiddleware, async (req: AuthRequest, res: Respo
         logErrorReport('restoreNote', SERVICE_NAME, error, ERROR_CODES.NOTE_RESTORE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to restore note' }));
     }
-});
+}));
 
 export default router;
