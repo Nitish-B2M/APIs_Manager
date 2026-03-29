@@ -5,11 +5,12 @@ import { z } from 'zod';
 import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
 import { ERROR_CODES } from '../constants/errorCodes';
+import { catchAsync } from '../utils/catchAsync';
 
 const SERVICE_NAME = 'AIService';
 const router = Router();
 
-router.post('/generate-docs', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/generate-docs', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             method: z.string(),
@@ -35,9 +36,9 @@ router.post('/generate-docs', authMiddleware, async (req: AuthRequest, res: Resp
         logErrorReport('generateDocs', SERVICE_NAME, error, ERROR_CODES.AI_GENERATE_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'AI generation failed' }));
     }
-});
+}));
 
-router.post('/generate-tests', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/generate-tests', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             method: z.string(),
@@ -55,9 +56,9 @@ router.post('/generate-tests', authMiddleware, async (req: AuthRequest, res: Res
         logErrorReport('generateTests', SERVICE_NAME, error, ERROR_CODES.AI_GENERATE_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'AI test generation failed' }));
     }
-});
+}));
 
-router.post('/generate-request', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/generate-request', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             prompt: z.string(),
@@ -73,9 +74,9 @@ router.post('/generate-request', authMiddleware, async (req: AuthRequest, res: R
         logErrorReport('generateRequest', SERVICE_NAME, error, ERROR_CODES.AI_GENERATE_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'AI request generation failed' }));
     }
-});
+}));
 
-router.post('/explain-error', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/explain-error', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             method: z.string(),
@@ -93,9 +94,9 @@ router.post('/explain-error', authMiddleware, async (req: AuthRequest, res: Resp
         logErrorReport('explainError', SERVICE_NAME, error, ERROR_CODES.AI_GENERATE_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'AI error explanation failed' }));
     }
-});
+}));
 
-router.post('/generate-readme', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/generate-readme', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             title: z.string(),
@@ -112,6 +113,6 @@ router.post('/generate-readme', authMiddleware, async (req: AuthRequest, res: Re
         logErrorReport('generateReadme', SERVICE_NAME, error, ERROR_CODES.AI_GENERATE_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'AI README generation failed' }));
     }
-});
+}));
 
 export default router;

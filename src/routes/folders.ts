@@ -6,12 +6,13 @@ import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
 import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { ERROR_CODES } from '../constants/errorCodes';
+import { catchAsync } from '../utils/catchAsync';
 
 const SERVICE_NAME = 'FolderService';
 const router = Router();
 
 // Get all folders for a documentation
-router.get('/:documentationId/folders', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:documentationId/folders', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
 
@@ -36,10 +37,10 @@ router.get('/:documentationId/folders', authMiddleware, async (req: AuthRequest,
         logErrorReport('getFolders', SERVICE_NAME, error, ERROR_CODES.FOLDER_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch folders' }));
     }
-});
+}));
 
 // Create a new folder
-router.post('/:documentationId/folders', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/:documentationId/folders', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
         const schema = z.object({
@@ -90,10 +91,10 @@ router.post('/:documentationId/folders', authMiddleware, async (req: AuthRequest
         logErrorReport('createFolder', SERVICE_NAME, error, ERROR_CODES.FOLDER_CREATE_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'Failed to create folder' }));
     }
-});
+}));
 
 // Update a folder
-router.patch('/folders/:folderId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/folders/:folderId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { folderId } = req.params;
         const schema = z.object({
@@ -176,10 +177,10 @@ router.patch('/folders/:folderId', authMiddleware, async (req: AuthRequest, res:
         logErrorReport('updateFolder', SERVICE_NAME, error, ERROR_CODES.FOLDER_UPDATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to update folder' }));
     }
-});
+}));
 
 // Delete a folder
-router.delete('/folders/:folderId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/folders/:folderId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { folderId } = req.params;
         const { moveRequestsToParent } = req.query;
@@ -236,10 +237,10 @@ router.delete('/folders/:folderId', authMiddleware, async (req: AuthRequest, res
         logErrorReport('deleteFolder', SERVICE_NAME, error, ERROR_CODES.FOLDER_DELETE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to delete folder' }));
     }
-});
+}));
 
 // Move request to folder
-router.patch('/request/:requestId/move', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/request/:requestId/move', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const requestId = req.params.requestId as string;
         const schema = z.object({
@@ -291,10 +292,10 @@ router.patch('/request/:requestId/move', authMiddleware, async (req: AuthRequest
         logErrorReport('moveRequest', SERVICE_NAME, error, ERROR_CODES.FOLDER_MOVE_REQUEST_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to move request' }));
     }
-});
+}));
 
 // Reorder folders
-router.patch('/:documentationId/folders/reorder', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/:documentationId/folders/reorder', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
         const schema = z.object({
@@ -337,7 +338,7 @@ router.patch('/:documentationId/folders/reorder', authMiddleware, async (req: Au
         logErrorReport('reorderFolders', SERVICE_NAME, error, ERROR_CODES.FOLDER_REORDER_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to reorder folders' }));
     }
-});
+}));
 
 // Helper function to check if a folder is a descendant of another
 async function checkIsDescendant(folderId: string, potentialDescendantId: string): Promise<boolean> {

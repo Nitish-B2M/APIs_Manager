@@ -10,16 +10,29 @@ import { webhookService } from '../services/webhookService';
 import { auditService } from '../services/auditService';
 import { generateOpenApiSpec } from '../utils/openApiGenerator';
 import { generatePostmanCollection } from '../utils/postmanGenerator';
-
+import { catchAsync } from '../utils/catchAsync';
+import { parsePagination, buildPaginationMeta } from '../utils/pagination';
 
 const SERVICE_NAME = 'DocumentationService';
 const router = Router();
 
-// List all documentations for current user
-router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
+// List all documentations for current user (paginated)
+router.get('/list', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
+        const pg = parsePagination(req, { limit: 20, sortBy: 'updatedAt' });
+        const userId = req.user!.userId;
+
+        // Count total docs accessible to this user
+        const countResult = await query(
+            `SELECT COUNT(DISTINCT d.id) FROM documentation d
+             WHERE d."userId" = $1 OR d.id IN (SELECT "documentationId" FROM documentation_collaborators WHERE "userId" = $1)`,
+            [userId]
+        );
+        const total = parseInt(countResult.rows[0].count, 10);
+
+        // Fetch paginated docs with nested requests and folders
         const { rows } = await query(
-            `SELECT d.*, 
+            `SELECT d.*,
                     COALESCE(
                         json_agg(
                             json_build_object(
@@ -50,8 +63,9 @@ router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
              LEFT JOIN requests r ON d.id = r."documentationId"
              WHERE d."userId" = $1 OR d.id IN (SELECT "documentationId" FROM documentation_collaborators WHERE "userId" = $1)
              GROUP BY d.id
-             ORDER BY d."updatedAt" DESC`,
-            [req.user!.userId]
+             ORDER BY d."updatedAt" DESC
+             LIMIT $2 OFFSET $3`,
+            [userId, pg.limit, pg.offset]
         );
 
         const docsWithCollaborators = await Promise.all(rows.map(async (doc: any) => {
@@ -72,15 +86,16 @@ router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
         res.json(ApiResponse.success({
             message: 'Collections fetched successfully',
             data: docsWithCollaborators,
+            pagination: buildPaginationMeta(total, pg),
         }));
     } catch (error: any) {
         logErrorReport('listDocumentations', SERVICE_NAME, error, ERROR_CODES.DOC_LIST_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch collections' }));
     }
-});
+}));
 
 // Create new documentation
-router.post('/create', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/create', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             title: z.string(),
@@ -150,10 +165,10 @@ router.post('/create', authMiddleware, async (req: AuthRequest, res: Response) =
         logErrorReport('createDocumentation', SERVICE_NAME, error, ERROR_CODES.DOC_CREATE_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'Failed to create collection' }));
     }
-});
+}));
 
 // Create empty documentation
-router.post('/create-empty', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/create-empty', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             title: z.string(),
@@ -181,10 +196,10 @@ router.post('/create-empty', authMiddleware, async (req: AuthRequest, res: Respo
         logErrorReport('createEmptyDocumentation', SERVICE_NAME, error, ERROR_CODES.DOC_CREATE_EMPTY_FAILED);
         res.status(400).json(ApiResponse.error({ message: 'Failed to create empty collection' }));
     }
-});
+}));
 
 // Delete documentation
-router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const access = await checkAccess(id, req.user!.userId);
@@ -203,10 +218,10 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
         logErrorReport('deleteDocumentation', SERVICE_NAME, error, ERROR_CODES.DOC_DELETE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to delete collection' }));
     }
-});
+}));
 
 // Toggle public status
-router.patch('/:id/toggle-public', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/:id/toggle-public', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const { isPublic } = req.body;
@@ -229,10 +244,10 @@ router.patch('/:id/toggle-public', authMiddleware, async (req: AuthRequest, res:
         logErrorReport('togglePublic', SERVICE_NAME, error, ERROR_CODES.DOC_TOGGLE_PUBLIC_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to toggle visibility' }));
     }
-});
+}));
 
 // Update documentation (handles general content/variables)
-router.patch('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const { content, title } = req.body;
@@ -271,10 +286,10 @@ router.patch('/:id', authMiddleware, async (req: AuthRequest, res: Response) => 
         logErrorReport('updateDocumentation', SERVICE_NAME, error, ERROR_CODES.DOC_UPDATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to update collection' }));
     }
-});
+}));
 
 // Bulk delete requests
-router.post('/request/bulk-delete', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/request/bulk-delete', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             requestIds: z.array(z.string().uuid())
@@ -313,10 +328,10 @@ router.post('/request/bulk-delete', authMiddleware, async (req: AuthRequest, res
         logErrorReport('bulkDeleteRequests', SERVICE_NAME, error, 'DOC_BULK_DELETE_FAILED');
         res.status(500).json(ApiResponse.error({ message: 'Failed to delete requests' }));
     }
-});
+}));
 
 // Bulk move requests to a folder
-router.patch('/request/bulk-move', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/request/bulk-move', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             requestIds: z.array(z.string().uuid()),
@@ -356,10 +371,10 @@ router.patch('/request/bulk-move', authMiddleware, async (req: AuthRequest, res:
         logErrorReport('bulkMoveRequests', SERVICE_NAME, error, 'DOC_BULK_MOVE_FAILED');
         res.status(500).json(ApiResponse.error({ message: 'Failed to move requests' }));
     }
-});
+}));
 
 // Update a single request
-router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/request/:requestId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { requestId } = req.params;
         const body = req.body;
@@ -395,11 +410,25 @@ router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res
             return;
         }
 
+        // Optimistic concurrency: bump version + check expected version
+        updates.push(`version = version + 1`);
         values.push(requestId);
-        const { rows: updatedReq } = await query(
-            `UPDATE requests SET ${updates.join(', ')}, "updatedAt" = CURRENT_TIMESTAMP WHERE id = $${count} RETURNING *`,
-            values
-        );
+
+        let updateSql = `UPDATE requests SET ${updates.join(', ')}, "updatedAt" = CURRENT_TIMESTAMP WHERE id = $${count}`;
+
+        // If client sends expectedVersion, enforce optimistic lock
+        if (body.expectedVersion !== undefined) {
+            values.push(body.expectedVersion);
+            updateSql += ` AND version = $${count + 1}`;
+        }
+
+        updateSql += ' RETURNING *';
+        const { rows: updatedReq } = await query(updateSql, values);
+
+        if (updatedReq.length === 0 && body.expectedVersion !== undefined) {
+            res.status(409).json(ApiResponse.error({ message: 'Conflict: This request was modified by another user. Please refresh and try again.' }));
+            return;
+        }
 
         await query('UPDATE documentation SET "updatedAt" = CURRENT_TIMESTAMP WHERE id = $1', [docId]);
 
@@ -421,10 +450,10 @@ router.patch('/request/:requestId', authMiddleware, async (req: AuthRequest, res
         logErrorReport('updateRequest', SERVICE_NAME, error, ERROR_CODES.DOC_REQUEST_UPDATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to update request' }));
     }
-});
+}));
 
 // Delete a single request
-router.delete('/request/:requestId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/request/:requestId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { requestId } = req.params;
         const { rows: reqs } = await query('SELECT "documentationId", name FROM requests WHERE id = $1', [requestId]);
@@ -457,10 +486,10 @@ router.delete('/request/:requestId', authMiddleware, async (req: AuthRequest, re
         logErrorReport('deleteRequest', SERVICE_NAME, error, ERROR_CODES.DOC_REQUEST_DELETE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to delete request' }));
     }
-});
+}));
 
 // Reorder requests in a documentation
-router.patch('/:id/requests/reorder', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/:id/requests/reorder', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const schema = z.object({
@@ -496,10 +525,10 @@ router.patch('/:id/requests/reorder', authMiddleware, async (req: AuthRequest, r
         logErrorReport('reorderRequests', SERVICE_NAME, error, ERROR_CODES.DOC_REORDER_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to reorder requests' }));
     }
-});
+}));
 
 // Create a new request for a documentation
-router.post('/:id/request', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/:id/request', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const { name, method, url, folderId } = req.body;
@@ -540,10 +569,10 @@ router.post('/:id/request', authMiddleware, async (req: AuthRequest, res: Respon
         logErrorReport('createRequest', SERVICE_NAME, error, ERROR_CODES.DOC_REQUEST_CREATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to create request' }));
     }
-});
+}));
 
 // Get by ID
-router.get('/:id', optionalAuthMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:id', optionalAuthMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const { rows } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
@@ -566,7 +595,7 @@ router.get('/:id', optionalAuthMiddleware, async (req: AuthRequest, res: Respons
 
         const { rows: requests } = await query('SELECT * FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
         const { rows: folders } = await query('SELECT * FROM folders WHERE "documentationId" = $1 ORDER BY "order" ASC', [id]);
-        
+
         doc.requests = requests;
         doc.folders = folders;
         doc.role = access.role;
@@ -576,10 +605,10 @@ router.get('/:id', optionalAuthMiddleware, async (req: AuthRequest, res: Respons
         logErrorReport('getById', SERVICE_NAME, error, ERROR_CODES.DOC_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch documentation' }));
     }
-});
+}));
 
 // Update slug
-router.patch('/:id/slug', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/:id/slug', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const { slug } = req.body;
@@ -595,10 +624,10 @@ router.patch('/:id/slug', authMiddleware, async (req: AuthRequest, res: Response
     } catch (error: any) {
         res.status(500).json(ApiResponse.error({ message: 'Failed to update slug' }));
     }
-});
+}));
 
 // Get audit logs
-router.get('/:id/audit-logs', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:id/audit-logs', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const access = await checkAccess(id, req.user!.userId);
@@ -612,9 +641,9 @@ router.get('/:id/audit-logs', authMiddleware, async (req: AuthRequest, res: Resp
     } catch (error: any) {
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch logs' }));
     }
-});
+}));
 // Export to Postman Collection v2.1.0
-router.get('/:id/export/postman', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:id/export/postman', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const { rows } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
@@ -636,16 +665,16 @@ router.get('/:id/export/postman', authMiddleware, async (req: AuthRequest, res: 
 
         const collection = generatePostmanCollection(doc, requests, folders);
         res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Content-Disposition', `attachment; filename="${doc.title.replace(/\s+/g, '_')}_collection.json"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${doc.title.replace(/\\s+/g, '_')}_collection.json"`);
         res.json(collection);
     } catch (error: any) {
         logErrorReport('exportPostman', SERVICE_NAME, error, 'EXPORT_FAILED');
         res.status(500).json(ApiResponse.error({ message: 'Failed to export to Postman' }));
     }
-});
+}));
 
 // Export to OpenAPI 3.1.0
-router.get('/:id/export/openapi', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:id/export/openapi', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const id = req.params.id as string;
         const { rows } = await query('SELECT * FROM documentation WHERE id = $1', [id]);
@@ -667,16 +696,16 @@ router.get('/:id/export/openapi', authMiddleware, async (req: AuthRequest, res: 
 
         const spec = generateOpenApiSpec(doc, requests, folders);
         res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Content-Disposition', `attachment; filename="${doc.title.replace(/\s+/g, '_')}_openapi.json"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${doc.title.replace(/\\s+/g, '_')}_openapi.json"`);
         res.json(spec);
     } catch (error: any) {
         logErrorReport('exportOpenApi', SERVICE_NAME, error, 'EXPORT_FAILED');
         res.status(500).json(ApiResponse.error({ message: 'Failed to export to OpenAPI' }));
     }
-});
+}));
 
 // Get public documentation by slug
-router.get('/public/:slug', async (req: AuthRequest, res: Response) => {
+router.get('/public/:slug', catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { slug } = req.params;
         const { rows } = await query(
@@ -692,7 +721,7 @@ router.get('/public/:slug', async (req: AuthRequest, res: Response) => {
 
         const { rows: requests } = await query('SELECT * FROM requests WHERE "documentationId" = $1 ORDER BY "order" ASC', [doc.id]);
         const { rows: folders } = await query('SELECT * FROM folders WHERE "documentationId" = $1 ORDER BY "order" ASC', [doc.id]);
-        
+
         doc.requests = requests;
         doc.folders = folders;
 
@@ -701,6 +730,72 @@ router.get('/public/:slug', async (req: AuthRequest, res: Response) => {
         logErrorReport('getPublicBySlug', SERVICE_NAME, error, ERROR_CODES.DOC_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch public documentation' }));
     }
-});
+}));
+
+// ─── Request History ─────────────────────────────────────────────────
+
+// GET /request/:id/history — fetch history for a specific request
+router.get('/request/:id/history', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
+    try {
+        const { id } = req.params;
+        const pg = parsePagination(req, { limit: 30 });
+
+        const { rows } = await query('SELECT history, "documentationId" FROM requests WHERE id = $1', [id]);
+        if (rows.length === 0) {
+            res.status(404).json(ApiResponse.error({ message: 'Request not found' }));
+            return;
+        }
+
+        // Verify access
+        const access = await checkAccess(rows[0].documentationId, req.user!.userId);
+        if (!access.hasAccess) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
+            return;
+        }
+
+        const history = Array.isArray(rows[0].history) ? rows[0].history : [];
+        const total = history.length;
+
+        // Sort by timestamp descending, then paginate
+        const sorted = history.sort((a: any, b: any) =>
+            new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()
+        );
+        const paged = sorted.slice(pg.offset, pg.offset + pg.limit);
+
+        res.json(ApiResponse.success({
+            message: 'Request history fetched',
+            data: paged,
+            pagination: buildPaginationMeta(total, pg),
+        }));
+    } catch (error: any) {
+        logErrorReport('getRequestHistory', SERVICE_NAME, error, ERROR_CODES.DOC_FETCH_FAILED);
+        res.status(500).json(ApiResponse.error({ message: 'Failed to fetch history' }));
+    }
+}));
+
+// DELETE /request/:id/history — clear history for a specific request
+router.delete('/request/:id/history', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
+    try {
+        const { id } = req.params;
+
+        const { rows } = await query('SELECT "documentationId" FROM requests WHERE id = $1', [id]);
+        if (rows.length === 0) {
+            res.status(404).json(ApiResponse.error({ message: 'Request not found' }));
+            return;
+        }
+
+        const access = await checkAccess(rows[0].documentationId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
+            return;
+        }
+
+        await query('UPDATE requests SET history = $1 WHERE id = $2', ['[]', id]);
+        res.json(ApiResponse.success({ message: 'History cleared' }));
+    } catch (error: any) {
+        logErrorReport('clearRequestHistory', SERVICE_NAME, error, ERROR_CODES.DOC_FETCH_FAILED);
+        res.status(500).json(ApiResponse.error({ message: 'Failed to clear history' }));
+    }
+}));
 
 export default router;

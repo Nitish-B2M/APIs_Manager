@@ -4,35 +4,50 @@ import { ApiResponse } from '../utils/response';
 import * as monitorService from '../services/monitorService';
 import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { query } from '../utils/db';
+import { catchAsync } from '../utils/catchAsync';
+import { z } from 'zod';
 
 const router = Router();
 
-// Create monitor
-router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
-    try {
-        const { documentationId, requestId, name, url, method, headers, body, frequency, notifyEmail, webhookUrl, webhookType, webhookSecret } = req.body;
-        if (!documentationId || !name || !url) {
-            res.status(400).json(ApiResponse.error({ message: 'documentationId, name, and url are required' }));
-            return;
-        }
+const createMonitorSchema = z.object({
+    documentationId: z.string().uuid(),
+    requestId: z.string().uuid().optional(),
+    name: z.string().min(1).max(200),
+    url: z.string().url(),
+    method: z.string().default('GET'),
+    headers: z.any().optional(),
+    body: z.any().optional(),
+    frequency: z.string().default('*/5 * * * *'),
+    notifyEmail: z.string().email().optional(),
+    webhookUrl: z.string().url().optional(),
+    webhookType: z.string().optional(),
+    webhookSecret: z.string().optional(),
+});
 
-        const access = await checkAccess(documentationId, req.user!.userId);
+// Create monitor
+router.post('/', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
+    try {
+        const data = createMonitorSchema.parse(req.body);
+
+        const access = await checkAccess(data.documentationId, req.user!.userId);
         if (!access.hasAccess || !canEdit(access.role)) {
             res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required to create monitors' }));
             return;
         }
 
-        const monitor = await monitorService.createMonitor({ documentationId, requestId, name, url, method, headers, body, frequency, notifyEmail, webhookUrl, webhookType, webhookSecret });
+        const monitor = await monitorService.createMonitor(data);
         res.json(ApiResponse.success({ message: 'Monitor created', data: monitor }));
-        return;
     } catch (error: any) {
-        res.status(500).json(ApiResponse.error({ message: error.message }));
-        return;
+        if (error.name === 'ZodError') {
+            res.status(400).json(ApiResponse.error({ message: error.errors?.[0]?.message || 'Validation failed' }));
+            return;
+        }
+        res.status(500).json(ApiResponse.error({ message: 'Failed to create monitor' }));
     }
-});
+}));
 
 // List monitors for a documentation
-router.get('/list/:documentationId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/list/:documentationId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
 
@@ -49,10 +64,10 @@ router.get('/list/:documentationId', authMiddleware, async (req: AuthRequest, re
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // Get monitor history (for charting)
-router.get('/:monitorId/history', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:monitorId/history', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const monitorId = req.params.monitorId as string;
 
@@ -76,10 +91,10 @@ router.get('/:monitorId/history', authMiddleware, async (req: AuthRequest, res: 
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // Trigger manual check
-router.post('/:monitorId/check', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/:monitorId/check', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const monitorId = req.params.monitorId as string;
 
@@ -102,10 +117,10 @@ router.post('/:monitorId/check', authMiddleware, async (req: AuthRequest, res: R
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // Update monitor
-router.patch('/:monitorId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/:monitorId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const monitorId = req.params.monitorId as string;
 
@@ -128,10 +143,10 @@ router.patch('/:monitorId', authMiddleware, async (req: AuthRequest, res: Respon
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // Delete monitor
-router.delete('/:monitorId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/:monitorId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const monitorId = req.params.monitorId as string;
 
@@ -154,14 +169,14 @@ router.delete('/:monitorId', authMiddleware, async (req: AuthRequest, res: Respo
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // Get public status page data
-router.get('/public/:slug', async (req: import('express').Request, res: Response) => {
+router.get('/public/:slug', catchAsync(async (req: import('express').Request, res: Response) => {
     try {
         const slug = req.params.slug as string;
         const statusData = await monitorService.getPublicStatus(slug);
-        
+
         if (!statusData) {
             res.status(404).json(ApiResponse.error({ message: 'Status page not found or private' }));
             return;
@@ -173,10 +188,10 @@ router.get('/public/:slug', async (req: import('express').Request, res: Response
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 // Get heatmap data for a monitor
-router.get('/:monitorId/heatmap', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:monitorId/heatmap', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const monitorId = req.params.monitorId as string;
 
@@ -199,6 +214,6 @@ router.get('/:monitorId/heatmap', authMiddleware, async (req: AuthRequest, res: 
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
-});
+}));
 
 export default router;

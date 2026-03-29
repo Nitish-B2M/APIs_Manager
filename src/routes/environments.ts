@@ -6,6 +6,41 @@ import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
 import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { ERROR_CODES } from '../constants/errorCodes';
+import { catchAsync } from '../utils/catchAsync';
+import { encryptToken, decryptToken } from '../utils/crypto';
+
+/**
+ * Encrypt secret variable values before storing.
+ * Variables in the `secrets` array get their values encrypted.
+ */
+export function encryptSecrets(variables: Record<string, string>, secrets: string[]): Record<string, string> {
+    const result = { ...variables };
+    for (const key of secrets) {
+        if (result[key]) {
+            result[key] = `enc:${encryptToken(result[key])}`;
+        }
+    }
+    return result;
+}
+
+/**
+ * Decrypt secret variable values for API response.
+ * Returns masked values (last 4 chars) unless fullDecrypt is true.
+ */
+export function decryptSecrets(variables: Record<string, string>, secrets: string[], fullDecrypt = false): Record<string, string> {
+    const result = { ...variables };
+    for (const key of secrets) {
+        if (result[key]?.startsWith('enc:')) {
+            const decrypted = decryptToken(result[key].substring(4));
+            if (decrypted) {
+                result[key] = fullDecrypt ? decrypted : `****${decrypted.slice(-4)}`;
+            } else {
+                result[key] = '****';
+            }
+        }
+    }
+    return result;
+}
 
 const SERVICE_NAME = 'EnvironmentService';
 const router = Router();
@@ -15,7 +50,7 @@ const router = Router();
 // ============================================
 
 // Get all environments for a documentation
-router.get('/:documentationId/environments', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/:documentationId/environments', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
 
@@ -40,10 +75,10 @@ router.get('/:documentationId/environments', authMiddleware, async (req: AuthReq
         logErrorReport('getEnvironments', SERVICE_NAME, error, ERROR_CODES.ENV_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch environments' }));
     }
-});
+}));
 
 // Create a new collection environment
-router.post('/:documentationId/environments', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/:documentationId/environments', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
         const schema = z.object({
@@ -101,10 +136,10 @@ router.post('/:documentationId/environments', authMiddleware, async (req: AuthRe
         logErrorReport('createEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_CREATE_FAILED);
         res.status(400).json(ApiResponse.error({ message: `Failed to create environment: ${error.message}` }));
     }
-});
+}));
 
 // Set active environment for collection
-router.patch('/:documentationId/environments/set-active', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/:documentationId/environments/set-active', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const documentationId = req.params.documentationId as string;
         const schema = z.object({
@@ -153,14 +188,14 @@ router.patch('/:documentationId/environments/set-active', authMiddleware, async 
         logErrorReport('setActiveEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_SET_ACTIVE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to set active environment' }));
     }
-});
+}));
 
 // ============================================
 // GLOBAL SCOPED ROUTES
 // ============================================
 
 // Get all global environments for current user
-router.get('/global/list', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.get('/global/list', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { rows: environments } = await query(
             `SELECT * FROM environments 
@@ -177,10 +212,10 @@ router.get('/global/list', authMiddleware, async (req: AuthRequest, res: Respons
         logErrorReport('getGlobalEnvironments', SERVICE_NAME, error, ERROR_CODES.ENV_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch global environments' }));
     }
-});
+}));
 
 // Create a new global environment
-router.post('/global', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/global', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             name: z.string().min(1).max(50),
@@ -232,10 +267,10 @@ router.post('/global', authMiddleware, async (req: AuthRequest, res: Response) =
         logErrorReport('createGlobalEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_CREATE_FAILED);
         res.status(400).json(ApiResponse.error({ message: `Failed to create global environment: ${error.message}` }));
     }
-});
+}));
 
 // Set active global environment
-router.patch('/global/set-active', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/global/set-active', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const schema = z.object({
             environmentId: z.string().uuid().nullable()
@@ -277,14 +312,14 @@ router.patch('/global/set-active', authMiddleware, async (req: AuthRequest, res:
         logErrorReport('setActiveGlobalEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_SET_ACTIVE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to set active global environment' }));
     }
-});
+}));
 
 // ============================================
 // COMMON ROUTES (Shared for both scopes)
 // ============================================
 
 // Update an environment (handles global or collection)
-router.patch('/environments/:environmentId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.patch('/environments/:environmentId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { environmentId } = req.params;
         const schema = z.object({
@@ -397,10 +432,10 @@ router.patch('/environments/:environmentId', authMiddleware, async (req: AuthReq
         logErrorReport('updateEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_UPDATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to update environment' }));
     }
-});
+}));
 
 // Delete an environment
-router.delete('/environments/:environmentId', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.delete('/environments/:environmentId', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
         const { environmentId } = req.params;
 
@@ -440,6 +475,6 @@ router.delete('/environments/:environmentId', authMiddleware, async (req: AuthRe
         logErrorReport('deleteEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_DELETE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to delete environment' }));
     }
-});
+}));
 
 export default router;
