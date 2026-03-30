@@ -7,8 +7,10 @@ import { logErrorReport } from '../utils/logger';
 import { ERROR_CODES } from '../constants/errorCodes';
 import { checkAccess, canAdmin } from '../utils/rbac';
 import crypto from 'crypto';
-import { sendEmail, parseTemplate } from '../utils/email';
+import { sendBrandedEmail } from '../utils/email';
 import { catchAsync } from '../utils/catchAsync';
+import { notify } from '../services/notificationService';
+import { NOTIFY } from '../constants/notificationCodes';
 
 const SERVICE_NAME = 'CollaborationService';
 const router = Router();
@@ -225,58 +227,21 @@ router.post('/invite', authMiddleware, catchAsync(async (req: AuthRequest, res: 
             [email, documentationId, role, token, req.user!.userId, expiresAt]
         );
 
-        // Fetch the default invite template
-        const { rows: templateRows } = await query(
-            'SELECT id, subject, body FROM email_templates WHERE purpose = $1 AND "isActive" = TRUE ORDER BY "isDefault" DESC LIMIT 1',
-            ['COLLABORATION_INVITE']
-        );
-
-        const template = templateRows[0];
-        const inviteLink = `${process.env.ALLOWED_ORIGIN || 'http://localhost:3000'}/dashboard?token=${token}`;
+        // Send branded collaboration invite email
+        const acceptLink = `${process.env.ALLOWED_ORIGIN || 'http://localhost:3000'}/dashboard?token=${token}`;
         const { rows: docRows } = await query('SELECT title FROM documentation WHERE id = $1', [documentationId]);
-        const docTitle = docRows[0]?.title || 'A Documentation Collection';
+        const collectionName = docRows[0]?.title || 'A Documentation Collection';
         const { rows: inviterRows } = await query('SELECT name FROM users WHERE id = $1', [req.user!.userId]);
         const inviterName = inviterRows[0]?.name || 'Someone';
 
-        const vars = { docTitle, inviterName, role, inviteLink };
+        await sendBrandedEmail(email, 'COLLABORATION_INVITE', {
+            inviterName, collectionName, role, acceptLink,
+        }, { documentationId });
 
-        let subject, body;
-        if (template) {
-            subject = parseTemplate(template.subject, vars);
-            body = parseTemplate(template.body, vars);
-        } else {
-            subject = `Invitation to collaborate on ${docTitle}`;
-            body = `
-            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;">
-                <h2 style="color: #4f46e5;">Collaboration Invite</h2>
-                <p>Hello,</p>
-                <p><strong>${inviterName}</strong> has invited you to collaborate on <strong>${docTitle}</strong> as an <strong>${role}</strong>.</p>
-                <div style="margin: 30px 0;">
-                    <a href="${inviteLink}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Accept Invitation</a>
-                </div>
-                <p style="color: #666; font-size: 12px;">This invitation will expire in 7 days.</p>
-                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
-                <p style="color: #999; font-size: 11px;">If you don't have an account, you will be prompted to create one when you click the link.</p>
-            </div>
-            `;
-        }
-
-        try {
-            await sendEmail(email, subject, body);
-
-            // Log the email
-            await query(
-                `INSERT INTO email_logs ("templateId", "recipientEmail", "documentationId", status) 
-                 VALUES ($1, $2, $3, $4)`,
-                [template?.id || null, email, documentationId, 'SENT']
-            );
-        } catch (emailError: any) {
-            await query(
-                `INSERT INTO email_logs ("templateId", "recipientEmail", "documentationId", status, error) 
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [template?.id || null, email, documentationId, 'FAILED', emailError.message]
-            );
-            throw emailError;
+        // Notify the invited user (if they have an account)
+        const { rows: invitedUser } = await query('SELECT id FROM users WHERE email = $1', [email]);
+        if (invitedUser[0]) {
+            notify({ userId: invitedUser[0].id, code: NOTIFY.COLLAB_INVITED, message: `You've been invited as ${role} to a collection.`, link: `/dashboard` });
         }
 
         res.json(ApiResponse.success({
@@ -371,6 +336,13 @@ router.post('/accept', authMiddleware, catchAsync(async (req: AuthRequest, res: 
             );
 
             await query('COMMIT');
+
+            // Notify the collection owner that invite was accepted
+            const { rows: docOwner } = await query('SELECT "userId" FROM documentation WHERE id = $1', [invite.documentationId]);
+            if (docOwner[0]) {
+                notify({ userId: docOwner[0].userId, code: NOTIFY.COLLAB_INVITE_ACCEPTED, message: `${invite.email} accepted your invitation.`, link: `/docs/${invite.documentationId}` });
+            }
+
             res.json(ApiResponse.success({ message: 'Invitation accepted successfully' }));
         } catch (error) {
             await query('ROLLBACK');
@@ -404,6 +376,7 @@ router.delete('/collaborators/:id', authMiddleware, catchAsync(async (req: AuthR
         }
 
         await query('DELETE FROM documentation_collaborators WHERE id = $1', [id]);
+        notify({ userId: collabs[0].userId, code: NOTIFY.COLLAB_REMOVED, message: 'You have been removed from a collection.' });
         res.json(ApiResponse.success({ message: 'Collaborator removed' }));
     } catch (error: any) {
         logErrorReport('removeCollaborator', SERVICE_NAME, error, ERROR_CODES.COLLAB_REMOVE_FAILED);
@@ -437,6 +410,7 @@ router.patch('/collaborators/:id', authMiddleware, catchAsync(async (req: AuthRe
         }
 
         await query('UPDATE documentation_collaborators SET role = $1, "updatedAt" = NOW() WHERE id = $2', [role, id]);
+        notify({ userId: collabs[0].userId, code: NOTIFY.COLLAB_ROLE_CHANGED, message: `Your role has been changed to ${role}.` });
         res.json(ApiResponse.success({ message: 'Collaborator role updated' }));
     } catch (error: any) {
         logErrorReport('updateCollaboratorRole', SERVICE_NAME, error, ERROR_CODES.COLLAB_UPDATE_ROLE_FAILED);

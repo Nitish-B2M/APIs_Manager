@@ -3,6 +3,8 @@ import axios from 'axios';
 import * as crypto from 'crypto';
 import { query } from '../utils/db';
 import { webhookService } from './webhookService';
+import { notify } from './notificationService';
+import { NOTIFY } from '../constants/notificationCodes';
 
 // Map of active cron jobs: monitorId -> cron.ScheduledTask
 const activeJobs = new Map<string, cron.ScheduledTask>();
@@ -100,6 +102,13 @@ export async function runMonitorCheck(monitorId: string): Promise<void> {
     }
 
     if (!isSuccess) {
+        // Notify the collection owner
+        if (monitor.documentationId) {
+            const { rows: doc } = await query('SELECT "userId" FROM documentation WHERE id = $1', [monitor.documentationId]);
+            if (doc[0]) {
+                notify({ userId: doc[0].userId, code: NOTIFY.MONITOR_DOWN, message: `Monitor "${monitor.name}" is down (${statusCode || 'no response'}).`, link: `/docs/${monitor.documentationId}`, metadata: { monitorId: monitor.id, url: monitor.url, statusCode } });
+            }
+        }
         if (monitor.notifyEmail) {
             console.log(`[Monitor] ALERT: Monitor "${monitor.name}" failed. Notify: ${monitor.notifyEmail}`);
         }
