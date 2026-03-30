@@ -1,10 +1,15 @@
 import express from 'express';
 import { z } from 'zod';
 import { ContactModel } from '../models/Contact';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { adminMiddleware } from '../middleware/adminAuth';
 import { catchAsync } from '../utils/catchAsync';
+import { sendBrandedEmail } from '../utils/email';
+import { query } from '../utils/db';
+import { logErrorReport } from '../utils/logger';
+import { ERROR_CODES } from '../constants/errorCodes';
 
+const SERVICE_NAME = 'ContactService';
 const router = express.Router();
 
 const contactSchema = z.object({
@@ -32,6 +37,7 @@ router.post('/', catchAsync(async (req, res) => {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ success: false, message: error.errors[0].message });
         }
+        logErrorReport('submitContact', SERVICE_NAME, error, ERROR_CODES.CONTACT_SUBMIT_FAILED);
         return res.status(500).json({ success: false, message: 'Failed to submit contact form.' });
     }
 }));
@@ -46,6 +52,7 @@ router.get('/', catchAsync(async (req, res) => {
         const contacts = await ContactModel.findAll(status as string);
         return res.json({ success: true, data: contacts });
     } catch (error) {
+        logErrorReport('fetchContacts', SERVICE_NAME, error, ERROR_CODES.CONTACT_SUBMIT_FAILED);
         return res.status(500).json({ success: false, message: 'Failed to fetch messages.' });
     }
 }));
@@ -65,6 +72,7 @@ router.put('/:id/status', catchAsync(async (req, res) => {
 
         return res.json({ success: true, data: updated, message: 'Status updated' });
     } catch (error) {
+        logErrorReport('updateContactStatus', SERVICE_NAME, error, ERROR_CODES.CONTACT_SUBMIT_FAILED);
         return res.status(500).json({ success: false, message: 'Failed to update status.' });
     }
 }));
@@ -78,7 +86,46 @@ router.delete('/:id', catchAsync(async (req, res) => {
         }
         return res.json({ success: true, message: 'Message deleted' });
     } catch (error) {
+        logErrorReport('deleteContact', SERVICE_NAME, error, ERROR_CODES.CONTACT_SUBMIT_FAILED);
         return res.status(500).json({ success: false, message: 'Failed to delete message.' });
+    }
+}));
+
+// Reply to a contact message with branded email
+const replySchema = z.object({
+    replyBody: z.string().min(1, 'Reply cannot be empty'),
+});
+
+router.post('/:id/reply', catchAsync(async (req: AuthRequest, res) => {
+    try {
+        const { id } = req.params;
+        const { replyBody } = replySchema.parse(req.body);
+
+        const contact = await ContactModel.findById(id as string);
+        if (!contact) {
+            return res.status(404).json({ success: false, message: 'Contact message not found' });
+        }
+
+        // Send branded reply email
+        await sendBrandedEmail(contact.email, 'CONTACT_REPLY', {
+            contactName: contact.name,
+            replyBody,
+            originalMessage: contact.message,
+        });
+
+        // Update contact record
+        await query(
+            `UPDATE contacts SET reply_body = $1, "repliedAt" = NOW(), "repliedBy" = $2, status = 'RESOLVED' WHERE id = $3`,
+            [replyBody, req.user!.userId, id]
+        );
+
+        return res.json({ success: true, message: 'Reply sent successfully' });
+    } catch (error: any) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ success: false, message: error.errors[0].message });
+        }
+        logErrorReport('replyContact', SERVICE_NAME, error, ERROR_CODES.CONTACT_REPLY_FAILED);
+        return res.status(500).json({ success: false, message: 'Failed to send reply.' });
     }
 }));
 

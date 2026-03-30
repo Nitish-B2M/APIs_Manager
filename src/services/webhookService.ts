@@ -2,6 +2,8 @@ import axios from 'axios';
 import * as crypto from 'crypto';
 import { query } from '../utils/db';
 import { log } from '../utils/logger';
+import { notify } from './notificationService';
+import { NOTIFY } from '../constants/notificationCodes';
 
 export interface WebhookEvent {
     event: string;
@@ -121,6 +123,14 @@ export const webhookService = {
                  VALUES ($1, $2, $3, $4, false)`,
                 [webhook.id, `DEAD_LETTER: ${event.event}`, statusCode, `All ${MAX_RETRIES} retries failed. Last error: ${lastError}`]
             );
+
+            // Notify the documentation owner about dead letter
+            if (event.documentationId) {
+                const { rows: doc } = await query('SELECT "userId" FROM documentation WHERE id = $1', [event.documentationId]);
+                if (doc[0]) {
+                    notify({ userId: doc[0].userId, code: NOTIFY.WEBHOOK_DEAD_LETTER, message: `Webhook to ${webhook.url} permanently failed after ${MAX_RETRIES} retries.`, metadata: { webhookId: webhook.id, url: webhook.url, event: event.event } });
+                }
+            }
         } catch (err) {
             console.error('[Webhook] Failed to write dead letter:', err);
         }

@@ -32,6 +32,8 @@ import notificationRoutes from './routes/notifications';
 import commentRoutes from './routes/comments';
 import templateRoutes from './routes/templates';
 import searchRoutes from './routes/search';
+import emailTemplateRoutes from './routes/emailTemplates';
+import errorLogRoutes from './routes/errorLogs';
 import { initMonitors } from './services/monitorService';
 import { githubAccountMiddleware } from './middleware/githubAccount';
 
@@ -125,6 +127,8 @@ app.use('/api/notifications', generalLimiter, notificationRoutes);
 app.use('/api/comments', generalLimiter, commentRoutes);
 app.use('/api/templates', generalLimiter, templateRoutes);
 app.use('/api/search', generalLimiter, searchRoutes);
+app.use('/api/email-templates', generalLimiter, emailTemplateRoutes);
+app.use('/api/error-logs', generalLimiter, errorLogRoutes);
 app.use('/m', mockRoutes);
 
 app.get('/', (req, res) => {

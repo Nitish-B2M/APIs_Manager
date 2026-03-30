@@ -6,7 +6,10 @@ import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { query } from '../utils/db';
 import { catchAsync } from '../utils/catchAsync';
 import { z } from 'zod';
+import { logErrorReport } from '../utils/logger';
+import { ERROR_CODES } from '../constants/errorCodes';
 
+const SERVICE_NAME = 'MonitorService';
 const router = Router();
 
 const createMonitorSchema = z.object({
@@ -42,6 +45,7 @@ router.post('/', authMiddleware, catchAsync(async (req: AuthRequest, res: Respon
             res.status(400).json(ApiResponse.error({ message: error.errors?.[0]?.message || 'Validation failed' }));
             return;
         }
+        logErrorReport('POST /monitor', SERVICE_NAME, error, ERROR_CODES.MONITOR_CREATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: 'Failed to create monitor' }));
     }
 }));
@@ -61,6 +65,7 @@ router.get('/list/:documentationId', authMiddleware, catchAsync(async (req: Auth
         res.json(ApiResponse.success({ message: 'Monitors fetched', data: monitors }));
         return;
     } catch (error: any) {
+        logErrorReport('GET /monitor/list/:documentationId', SERVICE_NAME, error, ERROR_CODES.MONITOR_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -88,6 +93,7 @@ router.get('/:monitorId/history', authMiddleware, catchAsync(async (req: AuthReq
         res.json(ApiResponse.success({ message: 'History fetched', data: history }));
         return;
     } catch (error: any) {
+        logErrorReport('GET /monitor/:monitorId/history', SERVICE_NAME, error, ERROR_CODES.MONITOR_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -114,6 +120,7 @@ router.post('/:monitorId/check', authMiddleware, catchAsync(async (req: AuthRequ
         res.json(ApiResponse.success({ message: 'Check triggered', data: result }));
         return;
     } catch (error: any) {
+        logErrorReport('POST /monitor/:monitorId/check', SERVICE_NAME, error, ERROR_CODES.MONITOR_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -140,6 +147,7 @@ router.patch('/:monitorId', authMiddleware, catchAsync(async (req: AuthRequest, 
         res.json(ApiResponse.success({ message: 'Monitor updated', data: monitor }));
         return;
     } catch (error: any) {
+        logErrorReport('PATCH /monitor/:monitorId', SERVICE_NAME, error, ERROR_CODES.MONITOR_UPDATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -166,6 +174,7 @@ router.delete('/:monitorId', authMiddleware, catchAsync(async (req: AuthRequest,
         res.json(ApiResponse.success({ message: 'Monitor deleted' }));
         return;
     } catch (error: any) {
+        logErrorReport('DELETE /monitor/:monitorId', SERVICE_NAME, error, ERROR_CODES.MONITOR_DELETE_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -185,6 +194,7 @@ router.get('/public/:slug', catchAsync(async (req: import('express').Request, re
         res.json(ApiResponse.success({ message: 'Status fetched', data: statusData }));
         return;
     } catch (error: any) {
+        logErrorReport('GET /monitor/public/:slug', SERVICE_NAME, error, ERROR_CODES.MONITOR_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -211,6 +221,7 @@ router.get('/:monitorId/heatmap', authMiddleware, catchAsync(async (req: AuthReq
         res.json(ApiResponse.success({ message: 'Heatmap fetched', data: heatmap }));
         return;
     } catch (error: any) {
+        logErrorReport('GET /monitor/:monitorId/heatmap', SERVICE_NAME, error, ERROR_CODES.MONITOR_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }

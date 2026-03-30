@@ -5,7 +5,10 @@ import { ApiResponse } from '../utils/response';
 import { z } from 'zod';
 import { checkAccess, canAdmin } from '../utils/rbac';
 import { catchAsync } from '../utils/catchAsync';
+import { logErrorReport } from '../utils/logger';
+import { ERROR_CODES } from '../constants/errorCodes';
 
+const SERVICE_NAME = 'WebhookService';
 const router = Router();
 
 // List webhooks for a documentation
@@ -24,6 +27,7 @@ router.get('/:documentationId', authMiddleware, catchAsync(async (req: AuthReque
         );
         res.json(ApiResponse.success({ message: 'Webhooks fetched', data: rows }));
     } catch (error: any) {
+        logErrorReport('GET /webhook/:documentationId', SERVICE_NAME, error, ERROR_CODES.WEBHOOK_CRUD_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
 }));
@@ -54,6 +58,7 @@ router.post('/', authMiddleware, catchAsync(async (req: AuthRequest, res: Respon
 
         res.json(ApiResponse.success({ message: 'Webhook created', data: rows[0] }));
     } catch (error: any) {
+        logErrorReport('POST /webhook', SERVICE_NAME, error, ERROR_CODES.WEBHOOK_CRUD_FAILED);
         res.status(400).json(ApiResponse.error({ message: error.message }));
     }
 }));
@@ -78,6 +83,7 @@ router.delete('/:id', authMiddleware, catchAsync(async (req: AuthRequest, res: R
         await query('DELETE FROM webhooks WHERE id = $1', [id]);
         res.json(ApiResponse.success({ message: 'Webhook deleted' }));
     } catch (error: any) {
+        logErrorReport('DELETE /webhook/:id', SERVICE_NAME, error, ERROR_CODES.WEBHOOK_CRUD_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
 }));
@@ -105,6 +111,7 @@ router.get('/:id/logs', authMiddleware, catchAsync(async (req: AuthRequest, res:
         );
         res.json(ApiResponse.success({ message: 'Webhook logs fetched', data: logs }));
     } catch (error: any) {
+        logErrorReport('GET /webhook/:id/logs', SERVICE_NAME, error, ERROR_CODES.WEBHOOK_CRUD_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
 }));

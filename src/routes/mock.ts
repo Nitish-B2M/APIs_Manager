@@ -5,7 +5,10 @@ import { checkAccess, canEdit } from '../utils/rbac';
 import { query } from '../utils/db';
 import { ApiResponse } from '../utils/response';
 import { catchAsync } from '../utils/catchAsync';
+import { logErrorReport } from '../utils/logger';
+import { ERROR_CODES } from '../constants/errorCodes';
 
+const SERVICE_NAME = 'MockService';
 const router = Router();
 
 // --- Management Routes (Authenticated) ---
@@ -30,6 +33,7 @@ router.get('/config/:requestId', authMiddleware, catchAsync(async (req: AuthRequ
         const config = await mockService.getMockResponse(requestId);
         res.json(ApiResponse.success({ message: 'Mock configuration fetched', data: config }));
     } catch (error: any) {
+        logErrorReport('GET /mock/config/:requestId', SERVICE_NAME, error, ERROR_CODES.MOCK_CONFIG_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
 }));
@@ -58,6 +62,7 @@ router.post('/config', authMiddleware, catchAsync(async (req: AuthRequest, res) 
         const config = await mockService.upsertMockResponse(req.body);
         res.json(ApiResponse.success({ message: 'Mock configuration updated', data: config }));
     } catch (error: any) {
+        logErrorReport('POST /mock/config', SERVICE_NAME, error, ERROR_CODES.MOCK_CONFIG_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
     }
 }));
@@ -110,6 +115,7 @@ router.all('/:requestId*', catchAsync(async (req, res) => {
         res.status(mock.statusCode).send(mock.body);
         return;
     } catch (error: any) {
+        logErrorReport('ALL /mock/:requestId', SERVICE_NAME, error, ERROR_CODES.MOCK_SERVE_FAILED);
         res.status(500).json({ error: 'Mock server error', message: error.message });
         return;
     }
