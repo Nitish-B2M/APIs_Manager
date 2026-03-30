@@ -11,9 +11,11 @@ import { AuthRequest, authMiddleware } from '../middleware/auth';
 import { ApiResponse } from '../utils/response';
 import { logErrorReport } from '../utils/logger';
 import { ERROR_CODES } from '../constants/errorCodes';
-import { sendEmail } from '../utils/email';
+import { sendBrandedEmail } from '../utils/email';
 import { resetLimiter, authLimiter } from '../middleware/rateLimit';
 import { catchAsync } from '../utils/catchAsync';
+import { notify } from '../services/notificationService';
+import { NOTIFY } from '../constants/notificationCodes';
 
 const SERVICE_NAME = 'AuthService';
 const router = Router();
@@ -109,20 +111,22 @@ router.post('/register', authLimiter, catchAsync(async (req: Request, res: Respo
 
             await query('COMMIT');
 
-            // Send verification email
+            // Send branded welcome + verification email
             const clientUrl = process.env.ALLOWED_ORIGIN?.split(',')[0]?.trim() || 'http://localhost:3000';
             const verifyLink = `${clientUrl}/verify-email?token=${verificationToken}`;
-            sendEmail(email, 'Verify your email', `
-                <h2>Welcome to DevManus!</h2>
-                <p>Click below to verify your email address:</p>
-                <p><a href="${verifyLink}" style="padding:10px 20px;background:#6366f1;color:white;border-radius:8px;text-decoration:none;">Verify Email</a></p>
-                <p>This link expires in 24 hours.</p>
-            `).catch(err => console.error('[Email] Verification send failed:', err.message));
+            sendBrandedEmail(email, 'WELCOME', {
+                userName: email.split('@')[0],
+                verifyLink,
+                expiresIn: '24 hours',
+            }).catch(err => console.error('[Email] Welcome send failed:', err.message));
 
             // Issue tokens
             const accessToken = signAccessToken({ userId: user.id });
             const refreshToken = await createRefreshToken(user.id);
             setRefreshCookie(res, refreshToken);
+
+            // Notify: welcome
+            notify({ userId: user.id, code: NOTIFY.USER_REGISTERED, message: `Welcome to DevManus! Verify your email to unlock all features.`, link: '/dashboard' });
 
             res.json(ApiResponse.success({
                 message: 'User registered successfully. Please verify your email.',
@@ -167,6 +171,7 @@ router.post('/login', authLimiter, catchAsync(async (req: Request, res: Response
         if (!isValid) {
             const lockResult = await recordFailedLogin(user.id);
             if (lockResult.locked) {
+                notify({ userId: user.id, code: NOTIFY.USER_ACCOUNT_LOCKED, message: 'Your account has been locked for 15 minutes due to too many failed login attempts.' });
                 res.status(423).json(ApiResponse.error({ message: 'Account locked due to too many failed attempts. Try again in 15 minutes.' }));
             } else {
                 res.status(401).json(ApiResponse.error({ message: 'Invalid email or password' }));
@@ -274,6 +279,8 @@ router.post('/verify-email', catchAsync(async (req: Request, res: Response) => {
         [rows[0].id]
     );
 
+    notify({ userId: rows[0].id, code: NOTIFY.USER_EMAIL_VERIFIED, message: 'Your email has been verified. You now have full access.' });
+
     res.json(ApiResponse.success({ message: 'Email verified successfully' }));
 }));
 
@@ -303,11 +310,10 @@ router.post('/resend-verification', authMiddleware, catchAsync(async (req: AuthR
 
     const clientUrl = process.env.ALLOWED_ORIGIN?.split(',')[0]?.trim() || 'http://localhost:3000';
     const verifyLink = `${clientUrl}/verify-email?token=${verificationToken}`;
-    await sendEmail(user.email, 'Verify your email', `
-        <p>Click below to verify your email:</p>
-        <p><a href="${verifyLink}">Verify Email</a></p>
-        <p>Expires in 24 hours.</p>
-    `);
+    await sendBrandedEmail(user.email, 'EMAIL_VERIFICATION', {
+        verifyLink,
+        expiresIn: '24 hours',
+    });
 
     res.json(ApiResponse.success({ message: 'Verification email sent' }));
 }));
@@ -425,11 +431,10 @@ router.post('/forgot-password', resetLimiter, catchAsync(async (req: Request, re
 
         const clientUrl = process.env.ALLOWED_ORIGIN?.split(',')[0]?.trim() || 'http://localhost:3000';
         const resetLink = `${clientUrl}/reset-password?token=${token}`;
-        await sendEmail(email, 'Reset Your Password', `
-            <p>You requested a password reset. Click below:</p>
-            <p><a href="${resetLink}">Reset Password</a></p>
-            <p>This link expires in 1 hour.</p>
-        `);
+        await sendBrandedEmail(email, 'PASSWORD_RESET', {
+            resetLink,
+            expiresIn: '1 hour',
+        });
 
         res.json(ApiResponse.success({ message: successMsg }));
     } catch (error: any) {
@@ -468,6 +473,8 @@ router.post('/reset-password', resetLimiter, catchAsync(async (req: Request, res
 
         // Revoke all refresh tokens on password change
         await revokeAllUserTokens(userId);
+
+        notify({ userId, code: NOTIFY.USER_PASSWORD_CHANGED, message: 'Your password was changed. If this wasn\'t you, contact support immediately.' });
 
         res.json(ApiResponse.success({ message: 'Password reset successfully' }));
     } catch (error: any) {

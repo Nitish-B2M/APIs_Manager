@@ -11,7 +11,10 @@ import {
     executeWebSocket,
     executeSSE,
 } from '../services/protocolExecutor';
+import { logErrorReport } from '../utils/logger';
+import { ERROR_CODES } from '../constants/errorCodes';
 
+const SERVICE_NAME = 'ExecuteService';
 const router = Router();
 
 // ─── POST /execute — unified request execution ──────────────────────
@@ -129,6 +132,7 @@ router.post('/', authMiddleware, catchAsync(async (req: AuthRequest, res: Respon
                 res.status(400).json(ApiResponse.error({ message: `Unsupported protocol: ${data.protocol}` }));
         }
     } catch (error: any) {
+        logErrorReport('POST /execute', SERVICE_NAME, error, ERROR_CODES.EXEC_REST_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message || 'Execution failed' }));
     }
 }));
@@ -145,6 +149,7 @@ router.post('/graphql/introspect', authMiddleware, catchAsync(async (req: AuthRe
         const response = await introspectGraphQL(data.url, data.headers);
         res.json(ApiResponse.success({ message: 'Schema introspected', data: response }));
     } catch (error: any) {
+        logErrorReport('POST /execute/graphql/introspect', SERVICE_NAME, error, ERROR_CODES.EXEC_GRAPHQL_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message || 'Introspection failed' }));
     }
 }));
@@ -226,6 +231,7 @@ router.post('/collection', authMiddleware, catchAsync(async (req: AuthRequest, r
                     break;
                 }
             } catch (err: any) {
+                logErrorReport('POST /execute/collection [request]', SERVICE_NAME, err, ERROR_CODES.EXEC_COLLECTION_FAILED);
                 results.push({
                     id: reqItem.id,
                     url: reqItem.url,
@@ -255,6 +261,7 @@ router.post('/collection', authMiddleware, catchAsync(async (req: AuthRequest, r
             },
         }));
     } catch (error: any) {
+        logErrorReport('POST /execute/collection', SERVICE_NAME, error, ERROR_CODES.EXEC_COLLECTION_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message || 'Collection run failed' }));
     }
 }));

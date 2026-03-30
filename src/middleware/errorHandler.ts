@@ -1,6 +1,8 @@
 import { Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { AuthRequest } from './auth';
+import { logErrorReport } from '../utils/logger';
+import { ERROR_CODES } from '../constants/errorCodes';
 
 interface AppError extends Error {
     statusCode?: number;
@@ -13,24 +15,33 @@ interface AppError extends Error {
 export const requestIdMiddleware = (req: AuthRequest, res: Response, next: NextFunction) => {
     const requestId = req.headers['x-request-id'] as string || crypto.randomUUID();
     req.requestId = requestId;
+    (req as any)._startTime = Date.now();
     res.setHeader('x-request-id', requestId);
     next();
 };
 
 /**
  * Global error handler — must be the LAST middleware.
+ * Persists all unhandled errors to error_logs via logErrorReport.
  * Never leaks internal error details in production.
  */
 export const errorHandler = (err: AppError, req: AuthRequest, res: Response, _next: NextFunction) => {
     const statusCode = err.statusCode || 500;
     const requestId = req.requestId || 'unknown';
+    const responseTime = (req as any)._startTime ? Date.now() - (req as any)._startTime : undefined;
 
-    // Always log the full error server-side
-    console.error(`[ERROR] ${statusCode} [${requestId}] ${err.message}`, {
-        stack: err.stack,
-        path: req.path,
+    // Persist to DB via logErrorReport
+    logErrorReport('globalHandler', 'ErrorHandler', err, ERROR_CODES.SYSTEM_UNHANDLED, {
+        requestId,
+        userId: req.user?.userId,
         method: req.method,
-        timestamp: new Date().toISOString(),
+        path: req.path,
+        body: req.body,
+        headers: req.headers as any,
+        statusCode,
+        responseTime,
+        ipAddress: req.ip || req.socket?.remoteAddress,
+        userAgent: req.headers['user-agent'],
     });
 
     // In production, only return operational error messages

@@ -5,7 +5,10 @@ import { ApiResponse } from '../utils/response';
 import { checkAccess, canEdit, canAdmin } from '../utils/rbac';
 import { query } from '../utils/db';
 import { catchAsync } from '../utils/catchAsync';
+import { logErrorReport } from '../utils/logger';
+import { ERROR_CODES } from '../constants/errorCodes';
 
+const SERVICE_NAME = 'SnapshotService';
 const router = Router();
 
 // Create snapshot
@@ -30,6 +33,7 @@ router.post('/create', authMiddleware, catchAsync(async (req: AuthRequest, res: 
         }));
         return;
     } catch (error: any) {
+        logErrorReport('POST /snapshot/create', SERVICE_NAME, error, ERROR_CODES.SNAPSHOT_CREATE_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -53,6 +57,7 @@ router.get('/list/:documentationId', authMiddleware, catchAsync(async (req: Auth
         }));
         return;
     } catch (error: any) {
+        logErrorReport('GET /snapshot/list/:documentationId', SERVICE_NAME, error, ERROR_CODES.SNAPSHOT_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -81,6 +86,7 @@ router.get('/:snapshotId', authMiddleware, catchAsync(async (req: AuthRequest, r
         }));
         return;
     } catch (error: any) {
+        logErrorReport('GET /snapshot/:snapshotId', SERVICE_NAME, error, ERROR_CODES.SNAPSHOT_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -107,6 +113,7 @@ router.post('/restore/:snapshotId', authMiddleware, catchAsync(async (req: AuthR
         res.json(ApiResponse.success(result));
         return;
     } catch (error: any) {
+        logErrorReport('POST /snapshot/restore/:snapshotId', SERVICE_NAME, error, ERROR_CODES.SNAPSHOT_RESTORE_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
@@ -133,6 +140,7 @@ router.delete('/:snapshotId', authMiddleware, catchAsync(async (req: AuthRequest
         res.json(ApiResponse.success({ message: 'Snapshot deleted successfully' }));
         return;
     } catch (error: any) {
+        logErrorReport('DELETE /snapshot/:snapshotId', SERVICE_NAME, error, ERROR_CODES.SNAPSHOT_FETCH_FAILED);
         res.status(500).json(ApiResponse.error({ message: error.message }));
         return;
     }
