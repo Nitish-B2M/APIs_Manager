@@ -392,7 +392,7 @@ router.patch('/request/:requestId', authMiddleware, catchAsync(async (req: AuthR
             return;
         }
 
-        const fields = ['name', 'method', 'protocol', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'history', 'order', 'folderId', 'auth', 'assertions', 'responseSchema'];
+        const fields = ['name', 'method', 'protocol', 'url', 'description', 'body', 'headers', 'params', 'lastResponse', 'history', 'order', 'folderId', 'auth', 'assertions', 'responseSchema', 'pre_script', 'post_script'];
         const updates: string[] = [];
         const values: any[] = [];
         let count = 1;
