@@ -642,6 +642,48 @@ router.get('/:id/audit-logs', authMiddleware, catchAsync(async (req: AuthRequest
         res.status(500).json(ApiResponse.error({ message: 'Failed to fetch logs' }));
     }
 }));
+
+// Get audit log activity bucketed by day for a contribution heatmap.
+// Returns { days: [{ date: 'YYYY-MM-DD', count: N, users: {userId: n} }] } for the last 90 days.
+router.get('/:id/audit-logs/heatmap', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
+    try {
+        const id = req.params.id as string;
+        const access = await checkAccess(id, req.user!.userId);
+        if (!access.hasAccess) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden' }));
+            return;
+        }
+
+        const { rows } = await query(
+            `SELECT
+                TO_CHAR(a."createdAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+                a."userId",
+                COALESCE(u.name, u.email) AS "userName",
+                COUNT(*)::int AS count
+             FROM audit_logs a
+             LEFT JOIN users u ON u.id = a."userId"
+             WHERE a."documentationId" = $1
+               AND a."createdAt" >= NOW() - INTERVAL '90 days'
+             GROUP BY day, a."userId", u.name, u.email
+             ORDER BY day ASC`,
+            [id]
+        );
+
+        // Merge rows into { day -> { total, users: [{ userId, name, count }] } }
+        const byDay = new Map<string, { total: number; users: { userId: string; name: string; count: number }[] }>();
+        for (const r of rows) {
+            const bucket = byDay.get(r.day) || { total: 0, users: [] };
+            bucket.total += r.count;
+            bucket.users.push({ userId: r.userId, name: r.userName || 'Unknown', count: r.count });
+            byDay.set(r.day, bucket);
+        }
+
+        const days = Array.from(byDay.entries()).map(([date, v]) => ({ date, count: v.total, users: v.users }));
+        res.json(ApiResponse.success({ message: 'Heatmap fetched', data: { days } }));
+    } catch (error: any) {
+        res.status(500).json(ApiResponse.error({ message: 'Failed to fetch heatmap' }));
+    }
+}));
 // Export to Postman Collection v2.1.0
 router.get('/:id/export/postman', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
     try {
