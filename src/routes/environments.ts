@@ -477,4 +477,95 @@ router.delete('/environments/:environmentId', authMiddleware, catchAsync(async (
     }
 }));
 
+// ─── POST /:documentationId/environments/promote ─────────────────────
+// Copy selected variables from a source environment into a target
+// environment. Secrets are re-encrypted in the target so they're not
+// stored as plaintext or double-encrypted.
+router.post('/:documentationId/environments/promote', authMiddleware, catchAsync(async (req: AuthRequest, res: Response) => {
+    try {
+        const documentationId = req.params.documentationId as string;
+        const schema = z.object({
+            sourceId: z.string().uuid(),
+            targetId: z.string().uuid(),
+            keys: z.array(z.string()).optional(), // if omitted, promote all source keys
+            overwrite: z.boolean().default(true),
+        });
+        const input = schema.parse(req.body);
+
+        if (input.sourceId === input.targetId) {
+            res.status(400).json(ApiResponse.error({ message: 'Source and target must differ' }));
+            return;
+        }
+
+        const access = await checkAccess(documentationId, req.user!.userId);
+        if (!access.hasAccess || !canEdit(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Forbidden: Editor access required' }));
+            return;
+        }
+
+        const { rows: envs } = await query(
+            `SELECT * FROM environments WHERE id = ANY($1::uuid[]) AND "documentationId" = $2 AND "scope" = 'COLLECTION'`,
+            [[input.sourceId, input.targetId], documentationId]
+        );
+        const source = envs.find(e => e.id === input.sourceId);
+        const target = envs.find(e => e.id === input.targetId);
+        if (!source || !target) {
+            res.status(404).json(ApiResponse.error({ message: 'Source or target environment not found' }));
+            return;
+        }
+
+        // Guard against promoting into Production without explicit admin role.
+        // The frontend still asks for a typed confirmation — this is a belt.
+        if (/prod/i.test(target.name) && !canAdmin(access.role)) {
+            res.status(403).json(ApiResponse.error({ message: 'Admin access required to promote to a Production environment' }));
+            return;
+        }
+
+        const srcVars: Record<string, string> = source.variables || {};
+        const srcSecrets: string[] = source.secrets || [];
+        const tgtVars: Record<string, string> = { ...(target.variables || {}) };
+        const tgtSecrets: string[] = [...(target.secrets || [])];
+
+        const keysToPromote = input.keys && input.keys.length > 0
+            ? input.keys.filter(k => Object.prototype.hasOwnProperty.call(srcVars, k))
+            : Object.keys(srcVars);
+
+        const promoted: string[] = [];
+        const skipped: string[] = [];
+        for (const key of keysToPromote) {
+            if (!input.overwrite && Object.prototype.hasOwnProperty.call(tgtVars, key)) {
+                skipped.push(key);
+                continue;
+            }
+            let value = srcVars[key];
+            const isSecret = srcSecrets.includes(key);
+            // Decrypt from source, then re-encrypt fresh for target so the
+            // stored ciphertext is bound to the target row (and not shared).
+            if (isSecret && typeof value === 'string' && value.startsWith('enc:')) {
+                const plain = decryptToken(value.substring(4));
+                if (plain != null) value = `enc:${encryptToken(plain)}`;
+            }
+            tgtVars[key] = value;
+            if (isSecret && !tgtSecrets.includes(key)) tgtSecrets.push(key);
+            promoted.push(key);
+        }
+
+        const { rows: updated } = await query(
+            `UPDATE environments
+             SET variables = $1, secrets = $2, "updatedAt" = CURRENT_TIMESTAMP
+             WHERE id = $3
+             RETURNING *`,
+            [JSON.stringify(tgtVars), JSON.stringify(tgtSecrets), target.id]
+        );
+
+        res.json(ApiResponse.success({
+            message: `Promoted ${promoted.length} variable${promoted.length === 1 ? '' : 's'}${skipped.length ? `, skipped ${skipped.length}` : ''}`,
+            data: { target: updated[0], promoted, skipped },
+        }));
+    } catch (error: any) {
+        logErrorReport('promoteEnvironment', SERVICE_NAME, error, ERROR_CODES.ENV_UPDATE_FAILED);
+        res.status(500).json(ApiResponse.error({ message: error.message || 'Failed to promote variables' }));
+    }
+}));
+
 export default router;
